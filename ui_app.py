@@ -1184,6 +1184,24 @@ if check_password():
             background: #FFFF00 !important;
             box-shadow: 0 4px 24px rgba(255, 255, 0, 0.5) !important;
         }
+        /* RESET button — subtle, not distracting */
+        div[data-testid="stButton"][data-key*="console_reset_btn"] button {
+            background: transparent !important;
+            color: #9E9E8A !important;
+            -webkit-text-fill-color: #9E9E8A !important;
+            border: 1px solid rgba(158,158,138,0.3) !important;
+            font-size: 0.72rem !important;
+            font-weight: 600 !important;
+            letter-spacing: 0.06em !important;
+            padding: 4px 12px !important;
+            min-height: 0 !important;
+            height: auto !important;
+        }
+        div[data-testid="stButton"][data-key*="console_reset_btn"] button:hover {
+            color: #f0ece4 !important;
+            -webkit-text-fill-color: #f0ece4 !important;
+            border-color: rgba(240,236,228,0.4) !important;
+        }
         /* ── STATE 1: Empty canvas with centered PREVIEW button ── */
         .empty-canvas-wrap {
             background: #F0EEE9;
@@ -6083,6 +6101,212 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
         preview_clicked = False
         json_clicked = False
 
+        def _console_reset_keys():
+            # ONLY console UI keys — do not touch gallery/storyboard/editing/project state
+            keys = set()
+
+            # Core console model/workflow inputs
+            keys.update([
+                "model_selector",
+                "action_desc_s2", "s15_action_desc", "sd_prompt_input",
+                "s2_entry_point", "s2_workflow", "s2_workflow_fl", "s2_workflow_ff",
+                "s2_image_usage",
+                "s15_workflow",
+                "sd_style_select",
+            ])
+
+            # Uploaders / asset-pickers (console only)
+            keys.update([
+                "s2_first_frame", "s2_assets_first_frame",
+                "s2_last_frame", "s2_assets_last_frame",
+                "s2_first_only", "s2_assets_first_only",
+                "s2_images", "s2_assets_images",
+                "s2_videos", "s2_assets_videos",
+                "s2_audio", "s2_assets_audio",
+                "s15_first_frame", "s15_assets_first_frame",
+                "s15_last_frame", "s15_assets_last_frame",
+                "s15_images_single", "s15_assets_images",
+                "sd_refs_upload", "sd_assets_refs",
+            ])
+
+            # Preview/generate output state
+            keys.update([
+                "s2_raw_prompt", "s2_opt_prompt", "s2_last_result",
+                "s15_raw_prompt", "s15_opt_prompt", "s15_last_result",
+                "sd_raw_prompt", "sd_opt_prompt", "sd_last_result",
+                "json_preview", "_json_dict",
+                "show_generate_button", "s15_show_generate",
+                "_do_preview_s2", "_do_preview_s15", "_do_preview_sd",
+                "_do_generate_s2", "_do_generate_s15", "_do_generate_sd",
+                "_preview_feedback",
+                "canvas_prompt_editor", "canvas_json_viewer",
+                "vision_context", "s15_vision_context",
+            ])
+
+            # Technical, seeds, creativity, audio controls
+            keys.update([
+                "video_resolution", "video_aspect_ratio", "common_duration",
+                "gen_mode_selector",
+                "s15_resolution", "s15_aspect_ratio", "s15_duration", "s15_gen_mode",
+                "sd_resolution", "sd_ar_select",
+                "common_temperature", "common_num_variations", "last_num_variations",
+                "s15_temperature", "s15_num_variations",
+                "sd_optimize", "enforce_stability",
+                "enable_audio", "s15_enable_audio", "s2_audio_output",
+                "v_lang", "v_emo", "v_timbre", "v_pace",
+                "s2_dialogue", "s2_sfx",
+                "s15_v_lang", "s15_v_emo", "s15_v_timbre", "s15_v_pace",
+                "s15_dialogue", "s15_sfx",
+            ])
+            for i in range(5):
+                keys.update([f"seed_input_{i}", f"s15_seed_{i}"])
+
+            # Seedream style/gear controls in console
+            keys.update([
+                "sd_shot_type", "sd_mood", "sd_period",
+                "sd_camera", "sd_lenses", "sd_film_stock", "sd_sensor",
+                "sd_light_src", "sd_light_dir", "sd_light_type",
+            ])
+
+            # Shot enable toggles
+            keys.update(["en_s2", "en_s3", "s15_en_s2", "s15_en_s3"])
+
+            # Full shot panel keys (actual names from render_shot_panel)
+            for prefix in ["s", "s15_"]:
+                for shot_n in range(1, 4):
+                    k = f"{prefix}{shot_n}"
+                    keys.update([
+                        f"{k}_assets",
+                        f"{k}_shot_type", f"{k}_style", f"{k}_mood", f"{k}_period",
+                        f"{k}_camera", f"{k}_lenses", f"{k}_film_stock", f"{k}_sensor",
+                        f"{k}_light_src", f"{k}_light_dir", f"{k}_light",
+                        f"{k}_tb", f"{k}_tc", f"{k}_ts", f"{k}_tt", f"{k}_tbo", f"{k}_tsh",
+                        f"{k}_tv", f"{k}_tca", f"{k}_tg", f"{k}_tso", f"{k}_tmb",
+                        f"{k}_vfx_a", f"{k}_vfx_e",
+                        f"{k}_m1_type", f"{k}_m1_pace", f"{k}_m1_s", f"{k}_m1_e",
+                        f"{k}_m1_ca", f"{k}_m1_so",
+                        f"{k}_m2_type", f"{k}_m2_pace", f"{k}_m2_s", f"{k}_m2_e",
+                        f"{k}_m2_ca", f"{k}_m2_so",
+                        f"show_secondary_{k}",
+                        f"add_motions_{k}",
+                        f"add_c_btn_{k}",
+                        f"color_count_{k}",
+                    ])
+                    for ci in range(3):
+                        keys.update([f"{k}_c_hex_{ci}", f"{k}_c_tar_{ci}"])
+
+            return list(keys)
+
+        if st.session_state.get("_console_reset_pending"):
+            for _k in _console_reset_keys():
+                if _k in st.session_state:
+                    del st.session_state[_k]
+            # Safety sweep: remove any remaining console-widget keys by prefix.
+            _console_prefixes = (
+                "s1_", "s2_", "s3_", "s15_", "sd_",
+                "common_", "video_",
+                "seed_input_", "s15_seed_",
+                "show_secondary_s", "add_motions_s", "add_c_btn_s", "color_count_s",
+            )
+            _console_exact = {
+                "model_selector", "en_s2", "en_s3",
+                "enable_audio", "s15_enable_audio",
+                "gen_mode_selector",
+                "v_lang", "v_emo", "v_timbre", "v_pace",
+                "enforce_stability",
+            }
+            for _k in list(st.session_state.keys()):
+                if _k in _console_exact or _k.startswith(_console_prefixes):
+                    del st.session_state[_k]
+
+            # Force explicit console defaults so widgets cannot keep stale frontend selections.
+            _defaults = {
+                "model_selector": "SEEDANCE 2.0",
+                "action_desc_s2": "",
+                "s15_action_desc": "",
+                "sd_prompt_input": "",
+                "s2_entry_point": "First Frame",
+                "s2_workflow_fl": "Standard Generation",
+                "s2_workflow_ff": "Standard Generation",
+                "s2_workflow": "Standard Generation",
+                "s15_workflow": "Text-to-video",
+                "sd_style_select": "None (Raw Prompt)",
+                "video_resolution": "2K",
+                "video_aspect_ratio": "16:9",
+                "common_duration": 15,
+                "gen_mode_selector": "Standard (Online)",
+                "s15_resolution": "1080p",
+                "s15_aspect_ratio": "16:9",
+                "s15_duration": 12,
+                "s15_gen_mode": "Standard (Online)",
+                "sd_resolution": "3K",
+                "sd_ar_select": "Smart",
+                "common_temperature": 0.5,
+                "common_num_variations": 1,
+                "s15_temperature": 0.5,
+                "s15_num_variations": 1,
+                "sd_optimize": "None",
+                "enable_audio": False,
+                "s15_enable_audio": False,
+                "s2_audio_output": False,
+                "en_s2": False,
+                "en_s3": False,
+                "s15_en_s2": False,
+                "s15_en_s3": False,
+                "enforce_stability": False,
+            }
+            for _k, _v in _defaults.items():
+                st.session_state[_k] = _v
+
+            # Default values for all shot panels (s1..s3 and s15_1..s15_3).
+            for _prefix in ["s", "s15_"]:
+                for _n in range(1, 4):
+                    _k = f"{_prefix}{_n}"
+                    st.session_state[f"{_k}_assets"] = ""
+                    st.session_state[f"{_k}_shot_type"] = "Not specified"
+                    st.session_state[f"{_k}_style"] = "Not specified"
+                    st.session_state[f"{_k}_mood"] = "Not specified"
+                    st.session_state[f"{_k}_period"] = "Not specified"
+                    st.session_state[f"{_k}_camera"] = "Not specified"
+                    st.session_state[f"{_k}_lenses"] = "Not specified"
+                    st.session_state[f"{_k}_film_stock"] = "Not specified"
+                    st.session_state[f"{_k}_sensor"] = "Not specified"
+                    st.session_state[f"{_k}_light_src"] = "Not specified"
+                    st.session_state[f"{_k}_light_dir"] = "Not specified"
+                    st.session_state[f"{_k}_light"] = "Not specified"
+                    st.session_state[f"{_k}_tb"] = 5
+                    st.session_state[f"{_k}_tc"] = 5
+                    st.session_state[f"{_k}_ts"] = 5
+                    st.session_state[f"{_k}_tt"] = 5
+                    st.session_state[f"{_k}_tbo"] = 3
+                    st.session_state[f"{_k}_tsh"] = 5
+                    st.session_state[f"{_k}_tv"] = 0
+                    st.session_state[f"{_k}_tca"] = 0
+                    st.session_state[f"{_k}_tg"] = 0
+                    st.session_state[f"{_k}_tso"] = 0
+                    st.session_state[f"{_k}_tmb"] = 5
+                    st.session_state[f"{_k}_vfx_a"] = ""
+                    st.session_state[f"{_k}_vfx_e"] = ""
+                    st.session_state[f"{_k}_m1_type"] = "Not specified"
+                    st.session_state[f"{_k}_m1_pace"] = "Not specified"
+                    st.session_state[f"{_k}_m1_s"] = 0 if _n == 1 else 5
+                    st.session_state[f"{_k}_m1_e"] = 4 if _n == 1 else 10
+                    st.session_state[f"{_k}_m1_ca"] = "Not specified"
+                    st.session_state[f"{_k}_m1_so"] = "Not specified"
+                    st.session_state[f"{_k}_m2_type"] = "Not specified"
+                    st.session_state[f"{_k}_m2_pace"] = "Not specified"
+                    st.session_state[f"{_k}_m2_s"] = 4 if _n == 1 else 10
+                    st.session_state[f"{_k}_m2_e"] = 8 if _n == 1 else 15
+                    st.session_state[f"{_k}_m2_ca"] = "Not specified"
+                    st.session_state[f"{_k}_m2_so"] = "Not specified"
+                    st.session_state[f"show_secondary_{_k}"] = False
+                    st.session_state[f"color_count_{_k}"] = 1
+                    for _ci in range(3):
+                        st.session_state[f"{_k}_c_hex_{_ci}"] = ["#1E90FF", "#FF4500", "#32CD32"][_ci]
+                        st.session_state[f"{_k}_c_tar_{_ci}"] = ""
+            del st.session_state["_console_reset_pending"]
+            st.rerun()
+
         left_col, center_col, right_col = st.columns([1, 2, 1], vertical_alignment="top")
 
         with left_col:
@@ -6523,6 +6747,9 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
                 s15_action_desc = st.text_area(" ", placeholder="Describe the scene...", key="s15_action_desc", height=100, label_visibility="collapsed")
             else:
                 sd_prompt = st.text_area(" ", placeholder="Describe your vision...", height=100, key="sd_prompt_input", label_visibility="collapsed")
+            if st.button("RESET", key="console_reset_btn", use_container_width=True):
+                st.session_state["_console_reset_pending"] = True
+                st.rerun()
 
             with st.expander("CINEMATOGRAPHY", expanded=False):
                 if model_sel in ("SEEDANCE 1.5", "SEEDANCE 2.0"):
