@@ -1,0 +1,10 @@
+cd ~/arkitect_agent
+
+nano ui_app.py
+
+nano builder.py
+
+nano generator.py
+
+
+streamlit run ui_app.py

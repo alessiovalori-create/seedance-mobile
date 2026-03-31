@@ -1,0 +1,34 @@
+# Secrets
+.streamlit/secrets.toml
+*.env
+.env
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Generated media
+downloads/
+static
+
+# User data (persistent state)
+gallery_persisted.json
+snapshots_persisted.json
+projects.json
+
+# Uploaded assets
+assets/
+
+# Backups (launchctl)
+backups/
+
+# macOS
+.DS_Store
+
+# Old snapshots
+ui_app_pre_storyboard.py

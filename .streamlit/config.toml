@@ -1,0 +1,5 @@
+[server]
+enableStaticServing = true
+
+x[theme]
+base = "dark"

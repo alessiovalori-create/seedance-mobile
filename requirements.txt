@@ -1,0 +1,7 @@
+streamlit>=1.31.0
+requests
+opencv-python-headless
+pillow
+numpy
+urllib3
+streamlit-sortables
