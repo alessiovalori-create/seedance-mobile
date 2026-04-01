@@ -39,6 +39,118 @@ _DOWNLOADS_DIR = os.path.join(_APP_DIR, "downloads")
 _STATIC_DIR = os.path.join(_APP_DIR, "static")
 _STATIC_SERVING_OK = False
 
+# References (Pexels/Unsplash) iframe — Gallery .gal-card tokens + CSS columns masonry (natural aspect ratio)
+_REFS_STOCK_IFRAME_CSS = """<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:transparent;font-family:'Open Sans',sans-serif;}
+.ref-stock-masonry{
+  column-count:3;
+  column-gap:8px;
+  padding:4px;
+}
+@media (max-width:480px){
+  .ref-stock-masonry{column-count:2;}
+}
+.gal-card.ref-stock-card{
+  position:relative;
+  background:#1a1a18;
+  border-radius:6px;
+  overflow:visible;
+  border:2px solid transparent;
+  transition:border-color .2s,box-shadow .2s;
+  cursor:pointer;
+  break-inside:avoid;
+  page-break-inside:avoid;
+  margin-bottom:8px;
+  display:block;
+  width:100%;
+  min-height:0;
+}
+.gal-card.ref-stock-card:hover{border-color:rgba(255,235,59,.35)!important;box-shadow:0 4px 16px rgba(0,0,0,.35);}
+.ref-stock-img-wrap{
+  display:block;
+  width:100%;
+  line-height:0;
+  background:#121210;
+  position:relative;
+  border-radius:4px;
+  overflow:hidden;
+}
+.ref-stock-img-wrap.ref-stock-selected{
+  outline:2px solid #FFEB3B;
+  outline-offset:-2px;
+  box-shadow:0 0 0 1px #FFEB3B, 0 0 14px rgba(255,235,59,0.28);
+}
+.ref-stock-sel-check{
+  position:absolute;
+  bottom:8px;
+  right:6px;
+  background:#FFEB3B;
+  color:#000;
+  width:18px;
+  height:18px;
+  border-radius:50%;
+  font-size:11px;
+  font-weight:700;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  z-index:4;
+  pointer-events:none;
+  line-height:1;
+  box-sizing:border-box;
+}
+.ref-stock-img{
+  position:relative;
+  z-index:1;
+  width:100%;
+  height:auto;
+  max-height:none;
+  object-fit:contain;
+  vertical-align:top;
+  border-radius:4px;
+  display:block;
+  -webkit-user-drag:none;
+  user-select:none;
+  pointer-events:none;
+}
+.gal-badge{position:absolute;top:4px;left:4px;background:rgba(0,0,0,.75);color:#fff;font-size:9px;font-weight:700;padding:1px 6px;border-radius:3px;z-index:2;pointer-events:none;}
+.gal-expand{position:absolute;top:4px;right:4px;color:#999;cursor:pointer;z-index:6;width:20px;height:20px;display:flex;align-items:center;justify-content:center;border-radius:3px;background:rgba(0,0,0,0.55);transition:color .15s,background .15s;}
+.gal-expand:hover{color:#FFEB3B;background:rgba(0,0,0,0.85);}
+.gal-caption{color:#999;font-size:9px;padding:3px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.ref-stock-ph{
+  position:absolute;
+  inset:0;
+  z-index:0;
+  background:var(--ref-ph,#121210);
+  border-radius:4px;
+  pointer-events:none;
+}
+.ref-stock-img-wrap.ref-stock-no-dims{min-height:140px;}
+</style>"""
+
+
+def _refs_sanitize_hex_color(raw):
+    """Return #rgb or #rrggbb safe for CSS custom properties, or '' if invalid."""
+    if not raw or not isinstance(raw, str):
+        return ""
+    s = raw.strip()
+    if s.startswith("#"):
+        body = s[1:]
+    else:
+        body = s
+    if len(body) == 3 and all(c in "0123456789abcdefABCDEF" for c in body):
+        return "#" + body.lower()
+    if len(body) == 6 and all(c in "0123456789abcdefABCDEF" for c in body):
+        return "#" + body.lower()
+    return ""
+
+
+def _refs_placeholder_style_attr(api_color):
+    """Inline style setting --ref-ph when API provides avg_color / color."""
+    safe = _refs_sanitize_hex_color(api_color)
+    return f' style="--ref-ph:{safe};"' if safe else ""
+
 
 def _setup_static_serving():
     """Ensure static serving is configured. Returns True if likely working."""
@@ -802,11 +914,12 @@ def save_asset_catalog(catalog):
         pass
 
 
-def add_to_assets(source_path=None, uploaded_file=None, original_name=None):
+def add_to_assets(source_path=None, uploaded_file=None, original_name=None, provenance=None):
     """
     Add a file to the asset library.
     source_path: path on disk (for copies from Gallery/Storyboard/Editing)
     uploaded_file: Streamlit UploadedFile (for desktop uploads)
+    provenance: optional dict (e.g. ReferencesRoom: vendor, high_res_url, original_width/height)
     Returns the new asset dict or None on failure.
     """
     catalog = load_asset_catalog()
@@ -876,6 +989,8 @@ def add_to_assets(source_path=None, uploaded_file=None, original_name=None):
         "uploaded_at": datetime.now().isoformat(),
         "project_id": st.session_state.get("active_project_id"),
     }
+    if provenance and isinstance(provenance, dict):
+        entry["provenance"] = provenance
     catalog.append(entry)
     save_asset_catalog(catalog)
     return entry
@@ -1026,6 +1141,307 @@ def scan_assets(filter_type="All"):
     assets.sort(key=lambda x: x["mtime"], reverse=True)
     return assets
 
+
+def toggle_refs_selection(image_id, source="pexels"):
+    """ReferencesRoom: add/remove API photo id in selection sets.
+
+    High-res URL and width/height are not stored on the selection itself; they are
+    resolved at STORYBOARD/ASSET time from ``_refs_pexels_by_id`` / ``_refs_unsplash_by_id``
+    (full API payloads from the last search).
+    """
+    sid = str(image_id)
+    key = "refs_selected_pexels" if source == "pexels" else "refs_selected_unsplash"
+    if key not in st.session_state:
+        st.session_state[key] = set()
+    s = st.session_state[key]
+    if sid in s:
+        s.discard(sid)
+    else:
+        s.add(sid)
+
+
+def _refs_sel_bridge_on_change(bridge_key: str, source: str) -> None:
+    raw = (st.session_state.get(bridge_key) or "").strip()
+    st.session_state[bridge_key] = ""
+    token = raw.split("|")[0].strip()
+    if token.startswith("t:"):
+        token = token[2:]
+    if token:
+        toggle_refs_selection(token, source=source)
+
+
+def _refs_download_url_to_downloads(url: str, basename: str):
+    """Download remote image into downloads/ with a unique filename. Returns absolute path or None."""
+    if not url or (not url.startswith("http://") and not url.startswith("https://")):
+        return None
+    os.makedirs(_DOWNLOADS_DIR, exist_ok=True)
+    safe = re.sub(r"[^\w.\-]", "_", basename) or "ref_image.jpg"
+    base, ext = os.path.splitext(safe)
+    if not ext or ext.lower() not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+        ext = ".jpg"
+    dest = os.path.join(_DOWNLOADS_DIR, f"{base}{ext}")
+    n = 1
+    while os.path.exists(dest):
+        dest = os.path.join(_DOWNLOADS_DIR, f"{base}_{n}{ext}")
+        n += 1
+    try:
+        r = requests.get(
+            url,
+            timeout=90,
+            headers={"User-Agent": "AI-DOP-Console/1.0 (references; +https://github.com)"},
+        )
+        r.raise_for_status()
+        with open(dest, "wb") as f:
+            f.write(r.content)
+        return dest
+    except Exception:
+        return None
+
+
+def _refs_pexels_high_res_url(ph):
+    src = ph.get("src") or {}
+    return src.get("original") or src.get("large2x") or src.get("large")
+
+
+def _refs_pexels_provenance(ph, sid, high_res_url):
+    """Metadata from Pexels API for Storyboard/Assets (not thumbnail URLs)."""
+    w = h = None
+    try:
+        iw = int(ph.get("width") or 0)
+        ih = int(ph.get("height") or 0)
+        if iw > 0 and ih > 0:
+            w, h = iw, ih
+    except (TypeError, ValueError):
+        pass
+    return {
+        "vendor": "pexels",
+        "api_asset_id": str(sid),
+        "high_res_url": high_res_url,
+        "original_width": w,
+        "original_height": h,
+        "photographer": ph.get("photographer"),
+        "source_page_url": ph.get("url"),
+    }
+
+
+def _refs_unsplash_provenance(uc, sid, high_res_url):
+    """Metadata from Unsplash API for Storyboard/Assets (full-size URL + native dimensions)."""
+    photo = uc.get("photo") or {}
+    w = h = None
+    try:
+        iw = int(photo.get("width") or 0)
+        ih = int(photo.get("height") or 0)
+        if iw > 0 and ih > 0:
+            w, h = iw, ih
+    except (TypeError, ValueError):
+        pass
+    return {
+        "vendor": "unsplash",
+        "api_asset_id": str(sid),
+        "high_res_url": high_res_url,
+        "original_width": w,
+        "original_height": h,
+        "photographer_name": uc.get("user_name"),
+    }
+
+
+def _refs_send_selected_to_storyboard():
+    """Download selected Pexels/Unsplash images to downloads/, append to sb_active_images, persist snapshot."""
+    p_ids = set(st.session_state.get("refs_selected_pexels") or set())
+    u_ids = set(st.session_state.get("refs_selected_unsplash") or set())
+    if not p_ids and not u_ids:
+        return 0, 0, 0
+
+    if st.session_state.sb_mode not in ("new", "loaded"):
+        st.session_state.sb_mode = "new"
+        st.session_state.sb_active_name = ""
+        st.session_state.sb_active_images = []
+
+    existing_paths = {item.get("image_path") for item in st.session_state.sb_active_images if item.get("image_path")}
+    existing_urls = {item.get("url") for item in st.session_state.sb_active_images if item.get("url")}
+    by_p = st.session_state.get("_refs_pexels_by_id") or {}
+    by_u = st.session_state.get("_refs_unsplash_by_id") or {}
+    added = 0
+    skipped_dup = 0
+    failed = 0
+
+    def _sort_ref_ids(ids):
+        def _key(x):
+            xs = str(x)
+            return (0, int(xs)) if xs.isdigit() else (1, xs)
+
+        return sorted(ids, key=_key)
+
+    for sid in _sort_ref_ids(p_ids):
+        ph = by_p.get(str(sid))
+        if not ph:
+            failed += 1
+            continue
+        url = _refs_pexels_high_res_url(ph)
+        if not url:
+            failed += 1
+            continue
+        if url in existing_urls:
+            skipped_dup += 1
+            continue
+        path = _refs_download_url_to_downloads(url, f"pexels_{sid}.jpg")
+        if not path:
+            failed += 1
+            continue
+        if path in existing_paths:
+            skipped_dup += 1
+            continue
+        cap = (ph.get("alt") or ph.get("photographer") or f"Pexels {sid}")[:120]
+        prov = _refs_pexels_provenance(ph, sid, url)
+        item = {
+            "image_path": path,
+            "url": url,
+            "src": url,
+            "caption": cap,
+            "prompt": "",
+            "specs": {},
+            "project_id": st.session_state.get("active_project_id"),
+            "created_at": datetime.now().isoformat(),
+            "reference_provenance": prov,
+            "original_width": prov.get("original_width"),
+            "original_height": prov.get("original_height"),
+        }
+        st.session_state.sb_active_images.append(item)
+        existing_paths.add(path)
+        existing_urls.add(url)
+        added += 1
+
+    for sid in _sort_ref_ids(u_ids):
+        uc = by_u.get(str(sid))
+        if not uc:
+            failed += 1
+            continue
+        full_url = uc["full_url"]
+        if full_url in existing_urls:
+            skipped_dup += 1
+            continue
+        dep = uc.get("download_endpoint")
+        if dep and UNSPLASH_API_KEY:
+            try:
+                requests.get(
+                    dep,
+                    headers={"Authorization": f"Client-ID {UNSPLASH_API_KEY}"},
+                    timeout=15,
+                )
+            except Exception:
+                pass
+        path = _refs_download_url_to_downloads(full_url, f"unsplash_{sid}.jpg")
+        if not path:
+            failed += 1
+            continue
+        if path in existing_paths:
+            skipped_dup += 1
+            continue
+        un = uc.get("user_name") or "Photographer"
+        prov = _refs_unsplash_provenance(uc, sid, full_url)
+        item = {
+            "image_path": path,
+            "url": full_url,
+            "src": full_url,
+            "caption": f"{un} · Unsplash"[:120],
+            "prompt": "",
+            "specs": {},
+            "project_id": st.session_state.get("active_project_id"),
+            "created_at": datetime.now().isoformat(),
+            "reference_provenance": prov,
+            "original_width": prov.get("original_width"),
+            "original_height": prov.get("original_height"),
+        }
+        st.session_state.sb_active_images.append(item)
+        existing_paths.add(path)
+        existing_urls.add(full_url)
+        added += 1
+
+    st.session_state.refs_selected_pexels = set()
+    st.session_state.refs_selected_unsplash = set()
+    _autosave_storyboard_snapshot()
+    return added, skipped_dup, failed
+
+
+def _refs_send_selected_to_assets():
+    """Download selected reference images and add copies to Assets (same pattern as Gallery → ASSETS)."""
+    p_ids = set(st.session_state.get("refs_selected_pexels") or set())
+    u_ids = set(st.session_state.get("refs_selected_unsplash") or set())
+    if not p_ids and not u_ids:
+        return 0, 0
+
+    by_p = st.session_state.get("_refs_pexels_by_id") or {}
+    by_u = st.session_state.get("_refs_unsplash_by_id") or {}
+    saved = 0
+    failed = 0
+
+    def _sort_ref_ids(ids):
+        def _key(x):
+            xs = str(x)
+            return (0, int(xs)) if xs.isdigit() else (1, xs)
+
+        return sorted(ids, key=_key)
+
+    for sid in _sort_ref_ids(p_ids):
+        ph = by_p.get(str(sid))
+        if not ph:
+            failed += 1
+            continue
+        url = _refs_pexels_high_res_url(ph)
+        if not url:
+            failed += 1
+            continue
+        path = _refs_download_url_to_downloads(url, f"pexels_{sid}.jpg")
+        if not path:
+            failed += 1
+            continue
+        prov = _refs_pexels_provenance(ph, sid, url)
+        result = add_to_assets(
+            source_path=path,
+            original_name=f"pexels_{sid}.jpg",
+            provenance=prov,
+        )
+        if result:
+            saved += 1
+        else:
+            failed += 1
+
+    for sid in _sort_ref_ids(u_ids):
+        uc = by_u.get(str(sid))
+        if not uc:
+            failed += 1
+            continue
+        full_url = uc["full_url"]
+        dep = uc.get("download_endpoint")
+        if dep and UNSPLASH_API_KEY:
+            try:
+                requests.get(
+                    dep,
+                    headers={"Authorization": f"Client-ID {UNSPLASH_API_KEY}"},
+                    timeout=15,
+                )
+            except Exception:
+                pass
+        path = _refs_download_url_to_downloads(full_url, f"unsplash_{sid}.jpg")
+        if not path:
+            failed += 1
+            continue
+        prov = _refs_unsplash_provenance(uc, sid, full_url)
+        result = add_to_assets(
+            source_path=path,
+            original_name=f"unsplash_{sid}.jpg",
+            provenance=prov,
+        )
+        if result:
+            saved += 1
+        else:
+            failed += 1
+
+    st.session_state.refs_selected_pexels = set()
+    st.session_state.refs_selected_unsplash = set()
+    return saved, failed
+
+
 def check_password():
     def password_entered():
         entered = st.session_state.get("password", "")
@@ -1066,6 +1482,7 @@ if check_password():
             --text-secondary: #c4c4be;
             --text-muted: #7a7a75;
             --border-color: #2a2a28;
+            --refs-cream: #F5F5DC;
         }
         .stApp { font-family: 'Inter', sans-serif; background: var(--bg-primary); color: var(--text-primary); line-height: 1.6; }
         .stApp > div:first-child { border: 1px solid var(--border-color); min-height: 100vh; }
@@ -1518,6 +1935,8 @@ if check_password():
         }
         /* Gallery iframe bridges — never show as a visible box */
         div[data-testid="stTextInput"]:has(input[aria-label="gal_sel_bridge_inp"]),
+        div[data-testid="stTextInput"]:has(input[aria-label="refs_pexels_sel_bridge"]),
+        div[data-testid="stTextInput"]:has(input[aria-label="refs_unsplash_sel_bridge"]),
         div[data-testid="stTextInput"]:has(input[aria-label="gallery_action_input_img"]),
         div[data-testid="stTextInput"]:has(input[aria-label="proj_pick_bridge"]),
         div[data-testid="stTextInput"]:has(input[aria-label="sb_pick_bridge"]),
@@ -2003,6 +2422,81 @@ if check_password():
             opacity: 1 !important;
         }
         /* ══ TO ASSETS buttons — gallery/storyboard/editing ══ */
+        /* ══ References room — bottom bar (cream) ══ */
+        div[data-testid="stButton"][data-key="refs_bar_storyboard_btn"] button,
+        div[data-testid="stButton"][data-key="refs_bar_asset_btn"] button {
+            background: var(--refs-cream, #F5F5DC) !important;
+            color: #1a1a12 !important;
+            -webkit-text-fill-color: #1a1a12 !important;
+            border: 1px solid rgba(26, 26, 18, 0.18) !important;
+            border-radius: 6px !important;
+            font-family: 'Open Sans', sans-serif !important;
+            font-weight: 700 !important;
+            font-size: 0.82rem !important;
+            letter-spacing: 0.14em !important;
+            text-transform: uppercase !important;
+            min-height: 44px !important;
+        }
+        div[data-testid="stButton"][data-key="refs_bar_storyboard_btn"] button:hover,
+        div[data-testid="stButton"][data-key="refs_bar_asset_btn"] button:hover {
+            background: #faf8ec !important;
+            box-shadow: 0 2px 14px rgba(245, 245, 220, 0.28) !important;
+        }
+        div[data-testid="stButton"][data-key="refs_bar_storyboard_btn"] button:disabled,
+        div[data-testid="stButton"][data-key="refs_bar_asset_btn"] button:disabled {
+            opacity: 0.42 !important;
+            cursor: not-allowed !important;
+            box-shadow: none !important;
+        }
+        /* ReferencesRoom — STORYBOARD/ASSET dock: fixed above scroll so long masonry does not push it away */
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(
+            div[data-testid="stButton"][data-key="refs_bar_storyboard_btn"]
+        ) {
+            position: fixed !important;
+            bottom: 0 !important;
+            left: 0 !important;
+            right: 0 !important;
+            z-index: 10001 !important;
+            margin: 0 !important;
+            max-width: none !important;
+            width: 100% !important;
+            box-sizing: border-box !important;
+            padding: 0.55rem 1.25rem calc(0.7rem + env(safe-area-inset-bottom, 0px)) !important;
+            background: rgba(12, 12, 10, 0.94) !important;
+            backdrop-filter: blur(14px) !important;
+            -webkit-backdrop-filter: blur(14px) !important;
+            border: none !important;
+            border-top: 1px solid rgba(245, 245, 220, 0.28) !important;
+            border-radius: 0 !important;
+            box-shadow: 0 -10px 36px rgba(0, 0, 0, 0.5) !important;
+        }
+        section[data-testid="stMain"] .block-container:has(
+            div[data-testid="stButton"][data-key="refs_bar_storyboard_btn"]
+        ) {
+            padding-bottom: 9.5rem !important;
+        }
+        /* References — CLEAR + row SAVE (cream, same family as bottom bar) */
+        div[data-testid="stButton"][data-key="refs_pexels_clear_sel"] button,
+        div[data-testid="stButton"][data-key="refs_unsplash_clear_sel"] button,
+        div[data-testid="stButton"][data-key^="unsplash_save_"] button {
+            background: var(--refs-cream, #F5F5DC) !important;
+            color: #1a1a12 !important;
+            -webkit-text-fill-color: #1a1a12 !important;
+            border: 1px solid rgba(26, 26, 18, 0.18) !important;
+            border-radius: 6px !important;
+            font-family: 'Open Sans', sans-serif !important;
+            font-weight: 700 !important;
+            font-size: 0.72rem !important;
+            letter-spacing: 0.1em !important;
+            text-transform: uppercase !important;
+            min-height: 38px !important;
+        }
+        div[data-testid="stButton"][data-key="refs_pexels_clear_sel"] button:hover,
+        div[data-testid="stButton"][data-key="refs_unsplash_clear_sel"] button:hover,
+        div[data-testid="stButton"][data-key^="unsplash_save_"] button:hover {
+            background: #faf8ec !important;
+            box-shadow: 0 2px 12px rgba(245, 245, 220, 0.25) !important;
+        }
         div[data-testid="stButton"][data-key="save_imgs_to_assets"] button,
         div[data-testid="stButton"][data-key="save_vids_to_assets"] button,
         div[data-testid="stButton"][data-key*="_to_assets"] button {
@@ -2202,6 +2696,10 @@ if check_password():
         st.session_state.gallery_selected_imgs = set()
     if 'gallery_selected_vids' not in st.session_state:
         st.session_state.gallery_selected_vids = set()
+    if "refs_selected_pexels" not in st.session_state:
+        st.session_state.refs_selected_pexels = set()
+    if "refs_selected_unsplash" not in st.session_state:
+        st.session_state.refs_selected_unsplash = set()
     if 'sb_mode' not in st.session_state:
         st.session_state.sb_mode = None          # None | "new" | "loaded"
     if 'sb_active_name' not in st.session_state:
@@ -6081,14 +6579,133 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
                             if not photos:
                                 st.warning("No results found for your search term.")
                             else:
-                                cols = st.columns(3)
-                                for i, ph in enumerate(photos):
+                                st.session_state["_refs_pexels_by_id"] = {
+                                    str(ph.get("id")): ph
+                                    for ph in photos
+                                    if ph.get("id") is not None
+                                }
+                                _pex_sig = pexels_query.strip()
+                                if st.session_state.get("_refs_pexels_query_sig") != _pex_sig:
+                                    st.session_state._refs_pexels_query_sig = _pex_sig
+                                    st.session_state.refs_selected_pexels = set()
+
+                                def _refs_pex_bridge_cb():
+                                    _refs_sel_bridge_on_change("refs_pexels_sel_bridge", "pexels")
+
+                                st.text_input(
+                                    "refs_pexels_sel_bridge",
+                                    key="refs_pexels_sel_bridge",
+                                    on_change=_refs_pex_bridge_cb,
+                                    label_visibility="collapsed",
+                                )
+                                _n_pex = len(st.session_state.refs_selected_pexels)
+                                _pex_ab1, _pex_ab2 = st.columns([2, 1])
+                                with _pex_ab1:
+                                    st.markdown(
+                                        f'<p style="color:#FFEB3B;font-size:0.8rem;font-weight:600;'
+                                        f'font-family:Open Sans,sans-serif;margin:4px 0 8px;">'
+                                        f"{_n_pex} selected</p>",
+                                        unsafe_allow_html=True,
+                                    )
+                                with _pex_ab2:
+                                    if _n_pex > 0 and st.button("CLEAR", key="refs_pexels_clear_sel"):
+                                        st.session_state.refs_selected_pexels = set()
+                                        st.rerun()
+
+                                _pex_gal_exp = (
+                                    '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" '
+                                    'xmlns="http://www.w3.org/2000/svg">'
+                                    '<path d="M1 4.5V1H4.5M7.5 1H11V4.5M11 7.5V11H7.5M4.5 11H1V7.5" '
+                                    'stroke="currentColor" stroke-width="1.6" stroke-linecap="round" '
+                                    'stroke-linejoin="round"/></svg>'
+                                )
+                                _pex_cards_html = ""
+                                _pex_n = 0
+                                for _i, ph in enumerate(photos):
+                                    _pid = ph.get("id")
                                     src = ph.get("src") or {}
                                     hi_res = src.get("large2x") or src.get("large") or src.get("original")
-                                    if not hi_res:
+                                    if not hi_res or _pid is None:
                                         continue
-                                    with cols[i % 3]:
-                                        st.image(hi_res, use_container_width=True)
+                                    _pex_n += 1
+                                    _sid = str(_pid)
+                                    _safe_src = (
+                                        str(hi_res)
+                                        .replace("&", "&amp;")
+                                        .replace('"', "&quot;")
+                                        .replace("<", "&lt;")
+                                    )
+                                    _iw = _ih = None
+                                    try:
+                                        _iw = int(ph.get("width") or 0)
+                                        _ih = int(ph.get("height") or 0)
+                                    except (TypeError, ValueError):
+                                        _iw = _ih = 0
+                                    _pex_wh_attr = (
+                                        f' width="{_iw}" height="{_ih}"'
+                                        if _iw and _ih
+                                        else ""
+                                    )
+                                    _zoom_u = (
+                                        src.get("original")
+                                        or src.get("large2x")
+                                        or src.get("large")
+                                        or hi_res
+                                    )
+                                    _zoom_attr = (
+                                        str(_zoom_u)
+                                        .replace("&", "&amp;")
+                                        .replace('"', "&quot;")
+                                        .replace("'", "&#39;")
+                                    )
+                                    _is_sel = _sid in st.session_state.refs_selected_pexels
+                                    _wrap_sel = " ref-stock-selected" if _is_sel else ""
+                                    _wrap_nd = (
+                                        " ref-stock-no-dims"
+                                        if not (_iw and _ih)
+                                        else ""
+                                    )
+                                    _ph_style = _refs_placeholder_style_attr(ph.get("avg_color"))
+                                    _sel_chk = (
+                                        '<div class="ref-stock-sel-check">&#10003;</div>'
+                                        if _is_sel
+                                        else ""
+                                    )
+                                    _pex_cards_html += f"""<div class="gal-card ref-stock-card" onclick="refsPexelsSel('{_sid}')">
+<div class="gal-badge">{_pex_n}</div>
+<div class="ref-stock-img-wrap{_wrap_sel}{_wrap_nd}"{_ph_style}>
+<div class="ref-stock-ph" aria-hidden="true"></div>
+<div class="gal-expand" data-zoom="{_zoom_attr}" onclick="event.stopPropagation();event.preventDefault();var z=this.getAttribute('data-zoom');if(z)window.open(z,'_blank','noopener,noreferrer');" title="Open full size">{_pex_gal_exp}</div>
+{_sel_chk}
+<img class="ref-stock-img" src="{_safe_src}" alt="" loading="lazy" decoding="async"{_pex_wh_attr} draggable="false"/>
+</div>
+<div class="gal-caption">Pexels</div>
+</div>"""
+
+                                if not _pex_cards_html:
+                                    st.warning("No preview URLs in results.")
+                                else:
+                                    _pex_h = min(5600, 360 + _pex_n * 280)
+                                    _pex_html = (
+                                        _REFS_STOCK_IFRAME_CSS
+                                        + f'<div class="ref-stock-masonry">{_pex_cards_html}</div>'
+                                        + """
+<script>
+function refsPexelsSel(id) {
+var inp = window.parent.document.querySelector('input[aria-label="refs_pexels_sel_bridge"]');
+if (!inp) return;
+var ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+var payload = String(id) + '|' + Date.now();
+ns.call(inp, payload);
+inp.dispatchEvent(new Event('input', {bubbles:true}));
+inp.dispatchEvent(new Event('change', {bubbles:true}));
+try { inp.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: payload })); } catch (e) {}
+try { inp.focus({ preventScroll: true }); } catch (e2) {}
+try { inp.blur(); } catch (e3) {}
+}
+</script>"""
+                                    )
+                                    components.html(_pex_html, height=_pex_h, scrolling=True)
                     except requests.RequestException as e:
                         st.error(f"Failed to contact Pexels API: {e}")
 
@@ -6121,8 +6738,8 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
                             if not results:
                                 st.warning("No results found for your search term.")
                             else:
-                                cols = st.columns(3)
-                                for i, photo in enumerate(results):
+                                _uns_cards = []
+                                for _ui, photo in enumerate(results):
                                     urls = photo.get("urls") or {}
                                     user = photo.get("user") or {}
                                     links = photo.get("links") or {}
@@ -6134,61 +6751,254 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
                                     user_html = user_links.get("html")
                                     if not img_url or not full_url:
                                         continue
-                                    with cols[i % 3]:
-                                        user_link = (
-                                            f"{user_html}?utm_source=ai_dop_console&utm_medium=referral"
-                                            if user_html
-                                            else "https://unsplash.com/?utm_source=ai_dop_console&utm_medium=referral"
-                                        )
-                                        unsplash_link = (
-                                            "https://unsplash.com/?utm_source=ai_dop_console&utm_medium=referral"
-                                        )
+                                    _uns_cards.append(
+                                        {
+                                            "photo": photo,
+                                            "img_url": img_url,
+                                            "full_url": full_url,
+                                            "user_name": user_name,
+                                            "download_endpoint": download_endpoint,
+                                            "user_link": (
+                                                f"{user_html}?utm_source=ai_dop_console&utm_medium=referral"
+                                                if user_html
+                                                else "https://unsplash.com/?utm_source=ai_dop_console&utm_medium=referral"
+                                            ),
+                                            "unsplash_link": "https://unsplash.com/?utm_source=ai_dop_console&utm_medium=referral",
+                                        }
+                                    )
 
-                                        st.image(img_url, use_container_width=True)
+                                if not _uns_cards:
+                                    st.warning("No preview URLs in results.")
+                                else:
+                                    st.session_state["_refs_unsplash_by_id"] = {
+                                        str(uc["photo"].get("id")): uc
+                                        for uc in _uns_cards
+                                        if uc.get("photo") and uc["photo"].get("id") is not None
+                                    }
+                                    _uns_sig = query
+                                    if st.session_state.get("_refs_unsplash_query_sig") != _uns_sig:
+                                        st.session_state._refs_unsplash_query_sig = _uns_sig
+                                        st.session_state.refs_selected_unsplash = set()
 
+                                    def _refs_uns_bridge_cb():
+                                        _refs_sel_bridge_on_change("refs_unsplash_sel_bridge", "unsplash")
+
+                                    st.text_input(
+                                        "refs_unsplash_sel_bridge",
+                                        key="refs_unsplash_sel_bridge",
+                                        on_change=_refs_uns_bridge_cb,
+                                        label_visibility="collapsed",
+                                    )
+                                    _n_uns = len(st.session_state.refs_selected_unsplash)
+                                    _uns_ab1, _uns_ab2 = st.columns([2, 1])
+                                    with _uns_ab1:
                                         st.markdown(
-                                            f"<p style='font-size:0.65rem; color:#7a7a6e; margin-top:-10px; margin-bottom:4px;'>"
-                                            f"Photo by <a href='{_html_stdlib.escape(user_link)}' target='_blank' style='color:#BB86FC; text-decoration:none;'>{_html_stdlib.escape(user_name)}</a> on "
-                                            f"<a href='{_html_stdlib.escape(unsplash_link)}' target='_blank' style='color:#BB86FC; text-decoration:none;'>Unsplash</a></p>",
+                                            f'<p style="color:#FFEB3B;font-size:0.8rem;font-weight:600;'
+                                            f'font-family:Open Sans,sans-serif;margin:4px 0 8px;">'
+                                            f"{_n_uns} selected</p>",
                                             unsafe_allow_html=True,
                                         )
+                                    with _uns_ab2:
+                                        if _n_uns > 0 and st.button("CLEAR", key="refs_unsplash_clear_sel"):
+                                            st.session_state.refs_selected_unsplash = set()
+                                            st.rerun()
 
-                                        if st.button(
-                                            "SAVE TO ASSETS",
-                                            key=f"unsplash_save_{photo.get('id', i)}",
-                                            use_container_width=True,
-                                        ):
-                                            if download_endpoint:
-                                                try:
-                                                    requests.get(
-                                                        download_endpoint,
-                                                        headers={"Authorization": f"Client-ID {UNSPLASH_API_KEY}"},
-                                                        timeout=15,
-                                                    )
-                                                except Exception:
-                                                    pass
-                                            try:
-                                                img_resp = requests.get(full_url, timeout=45)
-                                                img_resp.raise_for_status()
-                                                with tempfile.NamedTemporaryFile(
-                                                    delete=False, suffix=".jpg"
-                                                ) as tmp:
-                                                    tmp.write(img_resp.content)
-                                                    tmp_path = tmp.name
-                                                try:
-                                                    result = add_to_assets(
-                                                        source_path=tmp_path,
-                                                        original_name=f"unsplash_{photo.get('id', 'img')}.jpg",
-                                                    )
-                                                finally:
-                                                    if os.path.exists(tmp_path):
-                                                        os.unlink(tmp_path)
-                                                if result:
-                                                    st.toast(f"Saved image by {user_name} to Assets!")
-                                            except Exception:
-                                                st.error("Could not download or save this image.")
+                                    _uns_gal_exp = (
+                                        '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" '
+                                        'xmlns="http://www.w3.org/2000/svg">'
+                                        '<path d="M1 4.5V1H4.5M7.5 1H11V4.5M11 7.5V11H7.5M4.5 11H1V7.5" '
+                                        'stroke="currentColor" stroke-width="1.6" stroke-linecap="round" '
+                                        'stroke-linejoin="round"/></svg>'
+                                    )
+                                    _uns_cards_html = ""
+                                    for _j, uc in enumerate(_uns_cards):
+                                        photo = uc["photo"]
+                                        _pid = photo.get("id", _j)
+                                        _sid = str(_pid)
+                                        _safe_src = (
+                                            str(uc["img_url"])
+                                            .replace("&", "&amp;")
+                                            .replace('"', "&quot;")
+                                            .replace("<", "&lt;")
+                                        )
+                                        _uw = _uh = None
+                                        try:
+                                            _uw = int(photo.get("width") or 0)
+                                            _uh = int(photo.get("height") or 0)
+                                        except (TypeError, ValueError):
+                                            _uw = _uh = 0
+                                        _uns_wh_attr = (
+                                            f' width="{_uw}" height="{_uh}"'
+                                            if _uw and _uh
+                                            else ""
+                                        )
+                                        _full_u = uc["full_url"]
+                                        _zoom_attr_u = (
+                                            str(_full_u)
+                                            .replace("&", "&amp;")
+                                            .replace('"', "&quot;")
+                                            .replace("'", "&#39;")
+                                        )
+                                        _cap_line = _html_stdlib.escape(
+                                            f"{(uc['user_name'] or '')[:28]} — Unsplash"[:40]
+                                        )
+                                        _is_us = _sid in st.session_state.refs_selected_unsplash
+                                        _wrap_sel_u = " ref-stock-selected" if _is_us else ""
+                                        _wrap_nd_u = (
+                                            " ref-stock-no-dims"
+                                            if not (_uw and _uh)
+                                            else ""
+                                        )
+                                        _ph_style_u = _refs_placeholder_style_attr(
+                                            photo.get("color")
+                                        )
+                                        _sel_chk_u = (
+                                            '<div class="ref-stock-sel-check">&#10003;</div>'
+                                            if _is_us
+                                            else ""
+                                        )
+                                        _uns_cards_html += f"""<div class="gal-card ref-stock-card" onclick="refsUnsplashSel('{_sid}')">
+<div class="gal-badge">{_j + 1}</div>
+<div class="ref-stock-img-wrap{_wrap_sel_u}{_wrap_nd_u}"{_ph_style_u}>
+<div class="ref-stock-ph" aria-hidden="true"></div>
+<div class="gal-expand" data-zoom="{_zoom_attr_u}" onclick="event.stopPropagation();event.preventDefault();var z=this.getAttribute('data-zoom');if(z)window.open(z,'_blank','noopener,noreferrer');" title="Open full size">{_uns_gal_exp}</div>
+{_sel_chk_u}
+<img class="ref-stock-img" src="{_safe_src}" alt="" loading="lazy" decoding="async"{_uns_wh_attr} draggable="false"/>
+</div>
+<div class="gal-caption">{_cap_line}</div>
+</div>"""
+
+                                    _uns_n = len(_uns_cards)
+                                    _uns_h = min(5600, 360 + _uns_n * 280)
+                                    _uns_html = (
+                                        _REFS_STOCK_IFRAME_CSS
+                                        + f'<div class="ref-stock-masonry">{_uns_cards_html}</div>'
+                                        + """
+<script>
+function refsUnsplashSel(id) {
+var inp = window.parent.document.querySelector('input[aria-label="refs_unsplash_sel_bridge"]');
+if (!inp) return;
+var ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+var payload = String(id) + '|' + Date.now();
+ns.call(inp, payload);
+inp.dispatchEvent(new Event('input', {bubbles:true}));
+inp.dispatchEvent(new Event('change', {bubbles:true}));
+try { inp.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: payload })); } catch (e) {}
+try { inp.focus({ preventScroll: true }); } catch (e2) {}
+try { inp.blur(); } catch (e3) {}
+}
+</script>"""
+                                    )
+                                    components.html(_uns_html, height=_uns_h, scrolling=True)
+
+                                    for _ur in range((len(_uns_cards) + 2) // 3):
+                                        _u_cols = st.columns(3)
+                                        for _uc in range(3):
+                                            _ux = _ur * 3 + _uc
+                                            if _ux >= len(_uns_cards):
+                                                break
+                                            uc = _uns_cards[_ux]
+                                            photo = uc["photo"]
+                                            user_name = uc["user_name"]
+                                            full_url = uc["full_url"]
+                                            download_endpoint = uc["download_endpoint"]
+                                            user_link = uc["user_link"]
+                                            unsplash_link = uc["unsplash_link"]
+                                            _pid = photo.get("id", _ux)
+                                            with _u_cols[_uc]:
+                                                st.markdown(
+                                                    f"<p style='font-size:0.6rem; color:#7a7a6e; margin:2px 0 4px;'>"
+                                                    f"Photo by <a href='{_html_stdlib.escape(user_link)}' target='_blank' style='color:#BB86FC; text-decoration:none;'>{_html_stdlib.escape(user_name)}</a> on "
+                                                    f"<a href='{_html_stdlib.escape(unsplash_link)}' target='_blank' style='color:#BB86FC; text-decoration:none;'>Unsplash</a></p>",
+                                                    unsafe_allow_html=True,
+                                                )
+                                                if st.button(
+                                                    "SAVE TO ASSETS",
+                                                    key=f"unsplash_save_{_pid}",
+                                                    use_container_width=True,
+                                                ):
+                                                    if download_endpoint:
+                                                        try:
+                                                            requests.get(
+                                                                download_endpoint,
+                                                                headers={
+                                                                    "Authorization": f"Client-ID {UNSPLASH_API_KEY}"
+                                                                },
+                                                                timeout=15,
+                                                            )
+                                                        except Exception:
+                                                            pass
+                                                    try:
+                                                        img_resp = requests.get(full_url, timeout=45)
+                                                        img_resp.raise_for_status()
+                                                        with tempfile.NamedTemporaryFile(
+                                                            delete=False, suffix=".jpg"
+                                                        ) as tmp:
+                                                            tmp.write(img_resp.content)
+                                                            tmp_path = tmp.name
+                                                        try:
+                                                            _us_prov = _refs_unsplash_provenance(
+                                                                uc, str(_pid), full_url
+                                                            )
+                                                            result = add_to_assets(
+                                                                source_path=tmp_path,
+                                                                original_name=f"unsplash_{_pid}.jpg",
+                                                                provenance=_us_prov,
+                                                            )
+                                                        finally:
+                                                            if os.path.exists(tmp_path):
+                                                                os.unlink(tmp_path)
+                                                        if result:
+                                                            st.toast(
+                                                                f"Saved image by {user_name} to Assets!"
+                                                            )
+                                                    except Exception:
+                                                        st.error(
+                                                            "Could not download or save this image."
+                                                        )
                     except requests.RequestException as e:
                         st.error(f"Failed to contact Unsplash API: {e}")
+
+        _refs_n_sel = len(st.session_state.get("refs_selected_pexels") or set()) + len(
+            st.session_state.get("refs_selected_unsplash") or set()
+        )
+        if _refs_n_sel > 0:
+            with st.container(border=True):
+                st.markdown(
+                    '<div style="height:1px;background:linear-gradient(90deg,transparent,rgba(245,245,220,0.4),transparent);'
+                    'margin:0 0 0.65rem;"></div>'
+                    f'<p style="margin:0 0 12px;color:#9E9E8A;font-size:0.74rem;font-family:\'Open Sans\',sans-serif;">'
+                    f'<span style="color:var(--refs-cream, #F5F5DC);font-weight:700;">{_refs_n_sel}</span> '
+                    f"image(s) selected — send to workspace</p>",
+                    unsafe_allow_html=True,
+                )
+                _rrb1, _rrb2 = st.columns(2, gap="medium")
+                with _rrb1:
+                    if st.button("STORYBOARD", key="refs_bar_storyboard_btn", use_container_width=True):
+                        _a, _dup, _fail = _refs_send_selected_to_storyboard()
+                        _parts = []
+                        if _a:
+                            _parts.append(f"Added {_a} image(s) to Storyboard")
+                        if _dup:
+                            _parts.append(f"{_dup} duplicate(s) skipped")
+                        if _fail:
+                            _parts.append(f"{_fail} failed (refresh search or check network)")
+                        st.toast(
+                            ". ".join(_parts)
+                            if _parts
+                            else "Nothing added — repeat the search, then select again."
+                        )
+                        st.rerun()
+                with _rrb2:
+                    if st.button("ASSET", key="refs_bar_asset_btn", use_container_width=True):
+                        _sv, _fl = _refs_send_selected_to_assets()
+                        if _sv:
+                            st.toast(f"Saved {_sv} image(s) to Assets" + (f" ({_fl} failed)" if _fl else ""))
+                        elif _fl:
+                            st.toast(f"Could not save ({_fl} failed). Check network or search again.")
+                        else:
+                            st.toast("Nothing saved — repeat the search, then select again.")
+                        st.rerun()
 
     elif st.session_state.get("active_page") == "storyboard":
         if "sbi_nav" not in st.session_state:
