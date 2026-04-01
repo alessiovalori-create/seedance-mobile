@@ -1,11 +1,16 @@
 # REQUIREMENTS: Streamlit >= 1.31.0 for static file serving (video timeline)
 # Upgrade: pip install --upgrade streamlit
 
+import os
+from dotenv import load_dotenv
+
+# QUESTA È LA RIGA CHE APRE IL CAVEAU .ENV
+load_dotenv()
+
 import streamlit as st
 import re
 import json
 import html as _html_stdlib
-import os
 import random
 import copy
 import requests
@@ -6184,31 +6189,6 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
                                                 st.error("Could not download or save this image.")
                     except requests.RequestException as e:
                         st.error(f"Failed to contact Unsplash API: {e}")
-
-        refs_catalog = load_asset_catalog()
-        active_proj = get_active_project_id()
-        if active_proj:
-            refs_catalog = [a for a in refs_catalog if a.get("project_id") == active_proj]
-
-        ref_filter = st.radio(
-            "references_filter_label",
-            ["All", "Images", "Videos", "Audio"],
-            horizontal=True,
-            key="references_filter_radio",
-            label_visibility="collapsed",
-        )
-        _type_map = {"Images": "image", "Videos": "video", "Audio": "audio"}
-        if ref_filter != "All":
-            refs_catalog = [a for a in refs_catalog if a.get("type") == _type_map.get(ref_filter)]
-
-        if not refs_catalog:
-            st.info("No reference assets in this project.")
-        else:
-            for asset in refs_catalog:
-                st.markdown(
-                    f"- **{asset.get('name', 'Untitled')}**  "
-                    f"({str(asset.get('type', '')).upper()})"
-                )
 
     elif st.session_state.get("active_page") == "storyboard":
         if "sbi_nav" not in st.session_state:
