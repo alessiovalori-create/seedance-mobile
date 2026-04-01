@@ -14,7 +14,7 @@ import streamlit.components.v1 as components
 import base64 as _b64
 
 from builder import build_prompt as build_video_prompt, analyze_cinematography, build_image_prompt
-from generator import generate_video, generate_seedream_image, SEEDANCE_1_5_MODEL_ID, SEEDANCE_2_0_MODEL_ID, SEEDREAM_5_0_LITE_MODEL_ID, SEEDREAM_4_5_MODEL_ID, PEXELS_API_KEY
+from generator import generate_video, generate_seedream_image, SEEDANCE_1_5_MODEL_ID, SEEDANCE_2_0_MODEL_ID, SEEDREAM_5_0_LITE_MODEL_ID, SEEDREAM_4_5_MODEL_ID, PEXELS_API_KEY, UNSPLASH_API_KEY
 GENERATION_ENABLED = False  # ← Set to True to re-enable video/image generation API calls
 try:
     from streamlit_sortables import sort_items
@@ -27,6 +27,7 @@ except ImportError:
 # ══════════════════════════════════════════════════════
 import subprocess
 import shutil
+import tempfile
 
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 _DOWNLOADS_DIR = os.path.join(_APP_DIR, "downloads")
@@ -6043,43 +6044,146 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
         st.markdown("### REFERENCES")
         st.caption("Reference materials for prompt building in the current project.")
 
-        pexels_query = st.text_input(
-            "Search reference images",
-            placeholder="Type a keyword (e.g. cyberpunk city, cinematic portrait...)",
-            key="references_search_query",
-        )
-        pexels_per_page = st.slider("Results", min_value=3, max_value=30, value=12, step=3, key="references_per_page")
+        src_tab1, src_tab2 = st.tabs(["PEXELS", "UNSPLASH"])
 
-        if pexels_query and str(pexels_query).strip():
-            pexels_api_key = PEXELS_API_KEY
-            if not pexels_api_key:
-                st.error("PEXELS_API_KEY is missing. Add it to environment variables to enable image search.")
-            else:
-                try:
-                    resp = requests.get(
-                        "https://api.pexels.com/v1/search",
-                        headers={"Authorization": pexels_api_key},
-                        params={"query": pexels_query.strip(), "per_page": int(pexels_per_page), "page": 1},
-                        timeout=15,
-                    )
-                    if resp.status_code != 200:
-                        st.error(f"Pexels API error ({resp.status_code}).")
-                    else:
-                        payload = resp.json() or {}
-                        photos = payload.get("photos") or []
-                        if not photos:
-                            st.warning("No results found for your search term.")
+        with src_tab1:
+            pexels_query = st.text_input(
+                "Search reference images",
+                placeholder="Type a keyword (e.g. cyberpunk city, cinematic portrait...)",
+                key="pexels_query",
+            )
+            pexels_per_page = st.slider(
+                "Results", min_value=3, max_value=30, value=12, step=3, key="pexels_per_page"
+            )
+
+            if pexels_query and str(pexels_query).strip():
+                pexels_api_key = PEXELS_API_KEY
+                if not pexels_api_key:
+                    st.error("PEXELS_API_KEY is missing. Add it to environment variables to enable image search.")
+                else:
+                    try:
+                        resp = requests.get(
+                            "https://api.pexels.com/v1/search",
+                            headers={"Authorization": pexels_api_key},
+                            params={"query": pexels_query.strip(), "per_page": int(pexels_per_page), "page": 1},
+                            timeout=15,
+                        )
+                        if resp.status_code != 200:
+                            st.error(f"Pexels API error ({resp.status_code}).")
                         else:
-                            cols = st.columns(3)
-                            for i, ph in enumerate(photos):
-                                src = ph.get("src") or {}
-                                hi_res = src.get("large2x") or src.get("large") or src.get("original")
-                                if not hi_res:
-                                    continue
-                                with cols[i % 3]:
-                                    st.image(hi_res, use_container_width=True)
-                except requests.RequestException as e:
-                    st.error(f"Failed to contact Pexels API: {e}")
+                            payload = resp.json() or {}
+                            photos = payload.get("photos") or []
+                            if not photos:
+                                st.warning("No results found for your search term.")
+                            else:
+                                cols = st.columns(3)
+                                for i, ph in enumerate(photos):
+                                    src = ph.get("src") or {}
+                                    hi_res = src.get("large2x") or src.get("large") or src.get("original")
+                                    if not hi_res:
+                                        continue
+                                    with cols[i % 3]:
+                                        st.image(hi_res, use_container_width=True)
+                    except requests.RequestException as e:
+                        st.error(f"Failed to contact Pexels API: {e}")
+
+        with src_tab2:
+            unsplash_query = st.text_input(
+                "Search Unsplash",
+                placeholder="Type a keyword (e.g. cyberpunk city, cinematic portrait...)",
+                key="unsplash_query",
+            )
+
+            if unsplash_query and str(unsplash_query).strip():
+                query = unsplash_query.strip()
+                if not UNSPLASH_API_KEY:
+                    st.error(
+                        "Unsplash access key is missing. Set UNSPLASH_ACCESS_KEY or UNSPLASH_API_KEY in your environment."
+                    )
+                else:
+                    try:
+                        resp = requests.get(
+                            "https://api.unsplash.com/search/photos",
+                            params={"query": query, "per_page": 21},
+                            headers={"Authorization": f"Client-ID {UNSPLASH_API_KEY}"},
+                            timeout=15,
+                        )
+                        if resp.status_code != 200:
+                            st.error(f"Unsplash API error ({resp.status_code}).")
+                        else:
+                            payload = resp.json() or {}
+                            results = payload.get("results") or []
+                            if not results:
+                                st.warning("No results found for your search term.")
+                            else:
+                                cols = st.columns(3)
+                                for i, photo in enumerate(results):
+                                    urls = photo.get("urls") or {}
+                                    user = photo.get("user") or {}
+                                    links = photo.get("links") or {}
+                                    user_links = user.get("links") or {}
+                                    img_url = urls.get("regular")
+                                    full_url = urls.get("full")
+                                    user_name = user.get("name") or "Photographer"
+                                    download_endpoint = links.get("download_location")
+                                    user_html = user_links.get("html")
+                                    if not img_url or not full_url:
+                                        continue
+                                    with cols[i % 3]:
+                                        user_link = (
+                                            f"{user_html}?utm_source=ai_dop_console&utm_medium=referral"
+                                            if user_html
+                                            else "https://unsplash.com/?utm_source=ai_dop_console&utm_medium=referral"
+                                        )
+                                        unsplash_link = (
+                                            "https://unsplash.com/?utm_source=ai_dop_console&utm_medium=referral"
+                                        )
+
+                                        st.image(img_url, use_container_width=True)
+
+                                        st.markdown(
+                                            f"<p style='font-size:0.65rem; color:#7a7a6e; margin-top:-10px; margin-bottom:4px;'>"
+                                            f"Photo by <a href='{_html_stdlib.escape(user_link)}' target='_blank' style='color:#BB86FC; text-decoration:none;'>{_html_stdlib.escape(user_name)}</a> on "
+                                            f"<a href='{_html_stdlib.escape(unsplash_link)}' target='_blank' style='color:#BB86FC; text-decoration:none;'>Unsplash</a></p>",
+                                            unsafe_allow_html=True,
+                                        )
+
+                                        if st.button(
+                                            "SAVE TO ASSETS",
+                                            key=f"unsplash_save_{photo.get('id', i)}",
+                                            use_container_width=True,
+                                        ):
+                                            if download_endpoint:
+                                                try:
+                                                    requests.get(
+                                                        download_endpoint,
+                                                        headers={"Authorization": f"Client-ID {UNSPLASH_API_KEY}"},
+                                                        timeout=15,
+                                                    )
+                                                except Exception:
+                                                    pass
+                                            try:
+                                                img_resp = requests.get(full_url, timeout=45)
+                                                img_resp.raise_for_status()
+                                                with tempfile.NamedTemporaryFile(
+                                                    delete=False, suffix=".jpg"
+                                                ) as tmp:
+                                                    tmp.write(img_resp.content)
+                                                    tmp_path = tmp.name
+                                                try:
+                                                    result = add_to_assets(
+                                                        source_path=tmp_path,
+                                                        original_name=f"unsplash_{photo.get('id', 'img')}.jpg",
+                                                    )
+                                                finally:
+                                                    if os.path.exists(tmp_path):
+                                                        os.unlink(tmp_path)
+                                                if result:
+                                                    st.toast(f"Saved image by {user_name} to Assets!")
+                                            except Exception:
+                                                st.error("Could not download or save this image.")
+                    except requests.RequestException as e:
+                        st.error(f"Failed to contact Unsplash API: {e}")
 
         refs_catalog = load_asset_catalog()
         active_proj = get_active_project_id()
