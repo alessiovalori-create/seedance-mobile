@@ -14,7 +14,7 @@ import streamlit.components.v1 as components
 import base64 as _b64
 
 from builder import build_prompt as build_video_prompt, analyze_cinematography, build_image_prompt
-from generator import generate_video, generate_seedream_image, SEEDANCE_1_5_MODEL_ID, SEEDANCE_2_0_MODEL_ID, SEEDREAM_5_0_LITE_MODEL_ID, SEEDREAM_4_5_MODEL_ID
+from generator import generate_video, generate_seedream_image, SEEDANCE_1_5_MODEL_ID, SEEDANCE_2_0_MODEL_ID, SEEDREAM_5_0_LITE_MODEL_ID, SEEDREAM_4_5_MODEL_ID, PEXELS_API_KEY
 GENERATION_ENABLED = False  # ← Set to True to re-enable video/image generation API calls
 try:
     from streamlit_sortables import sort_items
@@ -6051,7 +6051,7 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
         pexels_per_page = st.slider("Results", min_value=3, max_value=30, value=12, step=3, key="references_per_page")
 
         if pexels_query and str(pexels_query).strip():
-            pexels_api_key = os.environ.get("PEXELS_API_KEY")
+            pexels_api_key = PEXELS_API_KEY
             if not pexels_api_key:
                 st.error("PEXELS_API_KEY is missing. Add it to environment variables to enable image search.")
             else:
@@ -6861,9 +6861,6 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
 
             if st.button("ASSETS", key="top_assets_btn", use_container_width=True):
                 st.session_state.active_page = "assets"
-                st.rerun()
-            if st.button("REFERENCES", key="top_references_btn", use_container_width=True):
-                st.session_state.active_page = "references"
                 st.rerun()
 
             json_clicked = st.button("JSON", use_container_width=True, key="json_settings_btn")

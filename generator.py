@@ -44,6 +44,7 @@ IMAGE_TASK_URL = f"{API_BASE}/contents/generations/tasks"  # Task API (video-sty
 
 # 2. CREDENTIALS
 API_KEY = os.getenv("ARK_API_KEY") or "YOUR_API_KEY_HERE"
+PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
 
 # SSL verify: set ARK_SSL_VERIFY=0 or false to disable (proxy/firewall / SSLEOFError)
 _ssl_verify = os.getenv("ARK_SSL_VERIFY", "1").strip().lower() not in ("0", "false", "no")
