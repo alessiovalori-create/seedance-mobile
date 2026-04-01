@@ -8,6 +8,7 @@ import html as _html_stdlib
 import os
 import random
 import copy
+import requests
 from datetime import datetime
 import streamlit.components.v1 as components
 import base64 as _b64
@@ -1949,6 +1950,22 @@ if check_password():
             text-transform: uppercase !important;
         }
         div[data-testid="stButton"][data-key="top_assets_btn"] button:hover {
+            background: #F0F0F0 !important;
+            box-shadow: 0 0 14px rgba(255,255,255,0.4) !important;
+        }
+        /* ══ REFERENCES button — console ══ */
+        div[data-testid="stButton"][data-key="top_references_btn"] button {
+            background: #FFFFFF !important;
+            color: #000000 !important;
+            -webkit-text-fill-color: #000000 !important;
+            border: none !important;
+            font-family: 'Open Sans', sans-serif !important;
+            font-size: 0.85rem !important;
+            font-weight: 700 !important;
+            letter-spacing: 0.1em !important;
+            text-transform: uppercase !important;
+        }
+        div[data-testid="stButton"][data-key="top_references_btn"] button:hover {
             background: #F0F0F0 !important;
             box-shadow: 0 0 14px rgba(255,255,255,0.4) !important;
         }
@@ -4687,7 +4704,7 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
         elif st.session_state.gal_nav in ("Images", "Videos"):
             st.session_state.gal_media_tab = st.session_state.gal_nav
             st.session_state.gal_nav = "Gallery"
-        elif st.session_state.gal_nav not in ("Console", "Projects", "Gallery", "Assets", "Storyboard", "Editing"):
+        elif st.session_state.gal_nav not in ("Console", "Projects", "Gallery", "Assets", "References", "Storyboard", "Editing"):
             st.session_state.gal_nav = "Gallery"
 
         def _on_gal_nav_change():
@@ -4707,10 +4724,13 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
             elif val == "Assets":
                 st.session_state.gal_nav = "Gallery"
                 st.session_state.active_page = "assets"
+            elif val == "References":
+                st.session_state.gal_nav = "Gallery"
+                st.session_state.active_page = "references"
 
         # Ordine nav: "Gallery" per prima così un reset sporadico del widget (click rapidi
         # tra controlli affiancati) non seleziona "Console" e non manda alla main page.
-        _GAL_MAIN_NAV = ["Gallery", "Console", "Projects", "Assets", "Storyboard", "Editing"]
+        _GAL_MAIN_NAV = ["Gallery", "Console", "Projects", "Assets", "References", "Storyboard", "Editing"]
         _gal_row_l, _gal_row_r = st.columns([4, 1])
         with _gal_row_l:
             if st.session_state.gal_nav == "Gallery":
@@ -5427,6 +5447,9 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
             elif val == "Assets":
                 st.session_state.proj_nav = "Projects"
                 st.session_state.active_page = "assets"
+            elif val == "References":
+                st.session_state.proj_nav = "Projects"
+                st.session_state.active_page = "references"
             elif val == "Storyboard":
                 st.session_state.proj_nav = "Projects"
                 st.session_state.active_page = "storyboard"
@@ -5438,7 +5461,7 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
         with _proj_nav_col:
             st.radio(
                 "proj_nav_label",
-                ["Console", "Projects", "Gallery", "Assets", "Storyboard", "Editing"],
+                ["Console", "Projects", "Gallery", "Assets", "References", "Storyboard", "Editing"],
                 horizontal=True,
                 key="proj_nav",
                 on_change=_on_proj_nav_change,
@@ -5747,7 +5770,7 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
         # ── Navigation ──
         if "assets_nav" not in st.session_state:
             st.session_state.assets_nav = "Assets"
-        elif st.session_state.assets_nav not in ("Console", "Projects", "Gallery", "Assets", "Storyboard", "Editing"):
+        elif st.session_state.assets_nav not in ("Console", "Projects", "Gallery", "Assets", "References", "Storyboard", "Editing"):
             st.session_state.assets_nav = "Assets"
 
         def _on_assets_nav_change():
@@ -5761,6 +5784,9 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
             elif val == "Gallery":
                 st.session_state.assets_nav = "Assets"
                 st.session_state.active_page = "gallery"
+            elif val == "References":
+                st.session_state.assets_nav = "Assets"
+                st.session_state.active_page = "references"
             elif val == "Storyboard":
                 st.session_state.assets_nav = "Assets"
                 st.session_state.active_page = "storyboard"
@@ -5772,7 +5798,7 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
         with _assets_nav_col:
             st.radio(
                 "assets_nav_label",
-                ["Console", "Projects", "Gallery", "Assets", "Storyboard", "Editing"],
+                ["Console", "Projects", "Gallery", "Assets", "References", "Storyboard", "Editing"],
                 horizontal=True,
                 key="assets_nav",
                 on_change=_on_assets_nav_change,
@@ -5973,10 +5999,117 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
                                 ):
                                     _do_asset_delete(asset, fpath, fname)
 
+    elif st.session_state.get("active_page") == "references":
+        # ── Navigation (same active_page routing pattern) ──
+        if "refs_nav" not in st.session_state:
+            st.session_state.refs_nav = "References"
+        elif st.session_state.refs_nav not in ("Console", "Projects", "Gallery", "Assets", "References", "Storyboard", "Editing"):
+            st.session_state.refs_nav = "References"
+
+        def _on_refs_nav_change():
+            val = st.session_state.refs_nav
+            if val == "Console":
+                st.session_state.refs_nav = "References"
+                st.session_state.active_page = "console"
+            elif val == "Projects":
+                st.session_state.refs_nav = "References"
+                st.session_state.active_page = "projects"
+            elif val == "Gallery":
+                st.session_state.refs_nav = "References"
+                st.session_state.active_page = "gallery"
+            elif val == "Assets":
+                st.session_state.refs_nav = "References"
+                st.session_state.active_page = "assets"
+            elif val == "Storyboard":
+                st.session_state.refs_nav = "References"
+                st.session_state.active_page = "storyboard"
+            elif val == "Editing":
+                st.session_state.refs_nav = "References"
+                st.session_state.active_page = "editing"
+
+        _refs_nav_col, _refs_proj_col = st.columns([4, 1])
+        with _refs_nav_col:
+            st.radio(
+                "refs_nav_label",
+                ["Console", "Projects", "Gallery", "Assets", "References", "Storyboard", "Editing"],
+                horizontal=True,
+                key="refs_nav",
+                on_change=_on_refs_nav_change,
+                label_visibility="collapsed",
+            )
+        with _refs_proj_col:
+            _render_project_name_inline_right()
+
+        st.markdown("### REFERENCES")
+        st.caption("Reference materials for prompt building in the current project.")
+
+        pexels_query = st.text_input(
+            "Search reference images",
+            placeholder="Type a keyword (e.g. cyberpunk city, cinematic portrait...)",
+            key="references_search_query",
+        )
+        pexels_per_page = st.slider("Results", min_value=3, max_value=30, value=12, step=3, key="references_per_page")
+
+        if pexels_query and str(pexels_query).strip():
+            pexels_api_key = os.environ.get("PEXELS_API_KEY")
+            if not pexels_api_key:
+                st.error("PEXELS_API_KEY is missing. Add it to environment variables to enable image search.")
+            else:
+                try:
+                    resp = requests.get(
+                        "https://api.pexels.com/v1/search",
+                        headers={"Authorization": pexels_api_key},
+                        params={"query": pexels_query.strip(), "per_page": int(pexels_per_page), "page": 1},
+                        timeout=15,
+                    )
+                    if resp.status_code != 200:
+                        st.error(f"Pexels API error ({resp.status_code}).")
+                    else:
+                        payload = resp.json() or {}
+                        photos = payload.get("photos") or []
+                        if not photos:
+                            st.warning("No results found for your search term.")
+                        else:
+                            cols = st.columns(3)
+                            for i, ph in enumerate(photos):
+                                src = ph.get("src") or {}
+                                hi_res = src.get("large2x") or src.get("large") or src.get("original")
+                                if not hi_res:
+                                    continue
+                                with cols[i % 3]:
+                                    st.image(hi_res, use_container_width=True)
+                except requests.RequestException as e:
+                    st.error(f"Failed to contact Pexels API: {e}")
+
+        refs_catalog = load_asset_catalog()
+        active_proj = get_active_project_id()
+        if active_proj:
+            refs_catalog = [a for a in refs_catalog if a.get("project_id") == active_proj]
+
+        ref_filter = st.radio(
+            "references_filter_label",
+            ["All", "Images", "Videos", "Audio"],
+            horizontal=True,
+            key="references_filter_radio",
+            label_visibility="collapsed",
+        )
+        _type_map = {"Images": "image", "Videos": "video", "Audio": "audio"}
+        if ref_filter != "All":
+            refs_catalog = [a for a in refs_catalog if a.get("type") == _type_map.get(ref_filter)]
+
+        if not refs_catalog:
+            st.info("No reference assets in this project.")
+        else:
+            for asset in refs_catalog:
+                st.markdown(
+                    f"- **{asset.get('name', 'Untitled')}**  "
+                    f"({str(asset.get('type', '')).upper()})"
+                )
+
     elif st.session_state.get("active_page") == "storyboard":
         if "sbi_nav" not in st.session_state:
             st.session_state.sbi_nav = "Storyboard"
-        elif st.session_state.sbi_nav not in ("Console", "Projects", "Gallery", "Assets", "Storyboard", "Editing"):
+        elif st.session_state.sbi_nav not in ("Console", "Projects", "Gallery", "Assets", "References", "Storyboard", "Editing"):
             st.session_state.sbi_nav = "Storyboard"
 
         def _on_sbi_nav_change():
@@ -5993,12 +6126,15 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
             elif val == "Assets":
                 st.session_state.sbi_nav = "Storyboard"
                 st.session_state.active_page = "assets"
+            elif val == "References":
+                st.session_state.sbi_nav = "Storyboard"
+                st.session_state.active_page = "references"
             elif val == "Editing":
                 st.session_state.sbi_nav = "Storyboard"
                 st.session_state.active_page = "editing"
 
         # "Storyboard" per primo: un reset sporadico del radio non seleziona "Console" → main page
-        _SBI_NAV_ORDER = ["Storyboard", "Console", "Projects", "Gallery", "Assets", "Editing"]
+        _SBI_NAV_ORDER = ["Storyboard", "Console", "Projects", "Gallery", "Assets", "References", "Editing"]
         _sbi_nav_col, _sbi_proj_col = st.columns([4, 1])
         with _sbi_nav_col:
             st.radio(
@@ -6021,7 +6157,7 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
     elif st.session_state.get("active_page") == "editing":
         if "sbv_nav" not in st.session_state:
             st.session_state.sbv_nav = "Editing"
-        elif st.session_state.sbv_nav not in ("Console", "Projects", "Gallery", "Assets", "Storyboard", "Editing"):
+        elif st.session_state.sbv_nav not in ("Console", "Projects", "Gallery", "Assets", "References", "Storyboard", "Editing"):
             st.session_state.sbv_nav = "Editing"
 
         def _on_sbv_nav_change():
@@ -6038,11 +6174,14 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
             elif val == "Assets":
                 st.session_state.sbv_nav = "Editing"
                 st.session_state.active_page = "assets"
+            elif val == "References":
+                st.session_state.sbv_nav = "Editing"
+                st.session_state.active_page = "references"
             elif val == "Storyboard":
                 st.session_state.sbv_nav = "Editing"
                 st.session_state.active_page = "storyboard"
 
-        _SBV_NAV_ORDER = ["Editing", "Console", "Projects", "Gallery", "Assets", "Storyboard"]
+        _SBV_NAV_ORDER = ["Editing", "Console", "Projects", "Gallery", "Assets", "References", "Storyboard"]
         _sbv_nav_col, _sbv_proj_col = st.columns([4, 1])
         with _sbv_nav_col:
             st.radio(
@@ -6723,6 +6862,9 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
             if st.button("ASSETS", key="top_assets_btn", use_container_width=True):
                 st.session_state.active_page = "assets"
                 st.rerun()
+            if st.button("REFERENCES", key="top_references_btn", use_container_width=True):
+                st.session_state.active_page = "references"
+                st.rerun()
 
             json_clicked = st.button("JSON", use_container_width=True, key="json_settings_btn")
 
@@ -7001,6 +7143,9 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
                 st.rerun()
             if st.button("STORYBOARD", key="top_sb_images_btn", use_container_width=True):
                 st.session_state.active_page = "storyboard"
+                st.rerun()
+            if st.button("REFERENCES", key="top_references_quick_btn", use_container_width=True):
+                st.session_state.active_page = "references"
                 st.rerun()
             if st.button("EDITING", key="top_sb_video_btn", use_container_width=True):
                 st.session_state.active_page = "editing"
