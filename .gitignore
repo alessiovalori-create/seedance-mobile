@@ -32,3 +32,5 @@ backups/
 
 # Old snapshots
 ui_app_pre_storyboard.py
+.env.save
+data/

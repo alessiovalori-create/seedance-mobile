@@ -35,7 +35,22 @@ import shutil
 import tempfile
 
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
-_DOWNLOADS_DIR = os.path.join(_APP_DIR, "downloads")
+
+# ── Persistent data root: Railway Volume /data, or local data/ ──
+_PERSIST_DIR = os.getenv("PERSIST_DIR", "")
+if not _PERSIST_DIR:
+    _PERSIST_DIR = "/data" if os.path.isdir("/data") else os.path.join(_APP_DIR, "data")
+os.makedirs(_PERSIST_DIR, exist_ok=True)
+
+_DB_DIR = os.path.join(_PERSIST_DIR, "db")
+_GENERATED_DIR = os.path.join(_PERSIST_DIR, "generated")
+_REFERENCES_DIR = os.path.join(_PERSIST_DIR, "references")
+os.makedirs(_DB_DIR, exist_ok=True)
+os.makedirs(_GENERATED_DIR, exist_ok=True)
+os.makedirs(_REFERENCES_DIR, exist_ok=True)
+
+# Legacy alias — some code still references _DOWNLOADS_DIR
+_DOWNLOADS_DIR = _GENERATED_DIR
 _STATIC_DIR = os.path.join(_APP_DIR, "static")
 _STATIC_SERVING_OK = False
 
@@ -186,31 +201,19 @@ def _setup_static_serving():
             if existing:
                 f.write(existing + "\n")
 
-    # 3. Ensure static/ directory links to downloads/
+    # 3. Ensure static/ directory links to _PERSIST_DIR (serves generated/, references/, assets/)
     if os.path.islink(_STATIC_DIR):
         target = os.path.realpath(_STATIC_DIR)
-        if target != os.path.realpath(_DOWNLOADS_DIR):
+        if target != os.path.realpath(_PERSIST_DIR):
             os.remove(_STATIC_DIR)
-            os.symlink(_DOWNLOADS_DIR, _STATIC_DIR, target_is_directory=True)
+            os.symlink(_PERSIST_DIR, _STATIC_DIR, target_is_directory=True)
     elif os.path.isdir(_STATIC_DIR):
         pass  # Don't delete user's static/ if it has content
     elif not os.path.exists(_STATIC_DIR):
         try:
-            os.symlink(_DOWNLOADS_DIR, _STATIC_DIR, target_is_directory=True)
+            os.symlink(_PERSIST_DIR, _STATIC_DIR, target_is_directory=True)
         except OSError:
             os.makedirs(_STATIC_DIR, exist_ok=True)
-
-    # Expose assets/ under static as downloads/_assets → ../assets (for /_stcore/static/_assets/...)
-    _assets_mount = os.path.join(_DOWNLOADS_DIR, "_assets")
-    if not os.path.lexists(_assets_mount):
-        try:
-            os.symlink(
-                os.path.abspath(os.path.join(_APP_DIR, "assets")),
-                _assets_mount,
-                target_is_directory=True,
-            )
-        except OSError:
-            pass
 
     _STATIC_SERVING_OK = os.path.exists(_STATIC_DIR)
     return _STATIC_SERVING_OK
@@ -370,20 +373,15 @@ def _to_static_url(file_path):
     except OSError:
         return file_path
 
-    real_downloads = os.path.realpath(_DOWNLOADS_DIR)
-    if real_file == real_downloads or real_file.startswith(real_downloads + os.sep):
-        rel = os.path.relpath(real_file, real_downloads)
+    real_persist = os.path.realpath(_PERSIST_DIR)
+    if real_file == real_persist or real_file.startswith(real_persist + os.sep):
+        rel = os.path.relpath(real_file, real_persist)
         return f"/_stcore/static/{rel.replace(os.sep, '/')}"
 
     real_static = os.path.realpath(_STATIC_DIR)
     if real_file == real_static or real_file.startswith(real_static + os.sep):
         rel = os.path.relpath(real_file, real_static)
         return f"/_stcore/static/{rel.replace(os.sep, '/')}"
-
-    real_assets = os.path.realpath(os.path.join(_APP_DIR, "assets"))
-    if real_file == real_assets or real_file.startswith(real_assets + os.sep):
-        rel_a = os.path.relpath(real_file, real_assets)
-        return f"/_stcore/static/_assets/{rel_a.replace(os.sep, '/')}"
 
     return file_path
 
@@ -510,8 +508,8 @@ def _inject_pulse_css():
     </style>
     """, unsafe_allow_html=True)
 
-GALLERY_FILE = os.path.join(os.path.dirname(__file__), "gallery_persisted.json")
-SNAPSHOTS_FILE = os.path.join(os.path.dirname(__file__), "snapshots_persisted.json")
+GALLERY_FILE = os.path.join(_DB_DIR, "gallery.json")
+SNAPSHOTS_FILE = os.path.join(_DB_DIR, "snapshots.json")
 
 def load_gallery_from_disk():
     if not os.path.exists(GALLERY_FILE):
@@ -1046,8 +1044,8 @@ def _render_editing_projects_sidebar():
         st.rerun()
 
 
-ASSETS_DIR = os.path.join(os.path.dirname(__file__), "assets")
-ASSETS_CATALOG_FILE = os.path.join(ASSETS_DIR, "catalog.json")
+ASSETS_DIR = os.path.join(_PERSIST_DIR, "assets")
+ASSETS_CATALOG_FILE = os.path.join(_DB_DIR, "assets_catalog.json")
 
 
 class AssetFile:
@@ -1168,7 +1166,7 @@ def add_to_assets(source_path=None, uploaded_file=None, original_name=None, prov
     save_asset_catalog(catalog)
     return entry
 
-PROJECTS_FILE = os.path.join(os.path.dirname(__file__), "projects.json")
+PROJECTS_FILE = os.path.join(_DB_DIR, "projects.json")
 
 
 def load_projects():
@@ -1234,8 +1232,8 @@ def _render_project_name_inline_right():
     )
 
 
-DOWNLOADS_DIR = os.path.join(os.path.dirname(__file__), "downloads")
-UPLOADS_DIR = os.path.join(os.path.dirname(__file__), "downloads", "uploads")
+DOWNLOADS_DIR = _GENERATED_DIR
+UPLOADS_DIR = os.path.join(_GENERATED_DIR, "uploads")
 
 IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.webp', '.gif'}
 VIDEO_EXTS = {'.mp4', '.mov', '.webm'}
@@ -1442,17 +1440,17 @@ def _refs_download_url_to_downloads(url: str, basename: str):
     """Download remote image into downloads/ with a unique filename. Returns absolute path or None."""
     if not url or (not url.startswith("http://") and not url.startswith("https://")):
         return None
-    os.makedirs(_DOWNLOADS_DIR, exist_ok=True)
+    os.makedirs(_REFERENCES_DIR, exist_ok=True)
     safe = re.sub(r"[^\w.\-]", "_", basename) or "ref_image.jpg"
     base, ext = os.path.splitext(safe)
     _img_exts = (".jpg", ".jpeg", ".png", ".webp", ".gif")
     _vid_exts = (".mp4", ".mov", ".webm")
     if not ext or ext.lower() not in (_img_exts + _vid_exts):
         ext = ".jpg"
-    dest = os.path.join(_DOWNLOADS_DIR, f"{base}{ext}")
+    dest = os.path.join(_REFERENCES_DIR, f"{base}{ext}")
     n = 1
     while os.path.exists(dest):
-        dest = os.path.join(_DOWNLOADS_DIR, f"{base}_{n}{ext}")
+        dest = os.path.join(_REFERENCES_DIR, f"{base}_{n}{ext}")
         n += 1
     try:
         r = requests.get(

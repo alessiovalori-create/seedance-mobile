@@ -80,7 +80,10 @@ def save_video_with_metadata(video_url, prompt_text, scene_description, resoluti
     """
     # Create downloads directory structure: downloads/YYYY-MM-DD/
     today = datetime.now().strftime("%Y-%m-%d")
-    base_dir = os.path.join(os.path.dirname(__file__), "downloads", today)
+    _persist = os.getenv("PERSIST_DIR", "")
+    if not _persist:
+        _persist = "/data" if os.path.isdir("/data") else os.path.join(os.path.dirname(__file__), "data")
+    base_dir = os.path.join(_persist, "generated", today)
     os.makedirs(base_dir, exist_ok=True)
     
     # Generate filename from scene description (first 30 chars, sanitized)
@@ -153,7 +156,10 @@ def save_image_with_metadata(image_url, prompt_text, style_preset="None", aspect
     optimize_prompt_mode: "standard", "fast", or None — included in info file when set (affects generation for 5.0 lite).
     """
     today = datetime.now().strftime("%Y-%m-%d")
-    base_dir = os.path.join(os.path.dirname(__file__), "downloads", today)
+    _persist = os.getenv("PERSIST_DIR", "")
+    if not _persist:
+        _persist = "/data" if os.path.isdir("/data") else os.path.join(os.path.dirname(__file__), "data")
+    base_dir = os.path.join(_persist, "generated", today)
     os.makedirs(base_dir, exist_ok=True)
     scene_slug = re.sub(r'[^\w\s-]', '', (prompt_text or "image")[:30]).strip().replace(' ', '_').lower() or "image"
     index = 1
