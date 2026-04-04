@@ -69,6 +69,76 @@ SEEDREAM_4_5_MODEL_ID = "seedream-4-5-251128"     # ByteDance-Seedream-4.5
 # ByteDance-Seedream-5.0-lite (260128): text, single/multi-image, image sets.
 SEEDREAM_5_0_LITE_MODEL_ID = os.getenv("SEEDREAM_5_MODEL_ID", "seedream-5-0-260128") 
 
+# ── Cost estimation ──────────────────────────────────────────
+def estimate_cost(model_id, resolution="720p", duration=5, generate_audio=False, is_draft=False, is_offline=False, aspect_ratio="16:9"):
+    """Return estimated cost in USD based on current ByteDance ARK pricing."""
+
+    # ── Seedream (images) ──
+    if "seedream" in str(model_id).lower():
+        # Image tokens = (width × height) / 784, ~$0.035 per 1K image
+        res_cost = {"3K": 0.14, "2K": 0.07, "1K": 0.035, "4K": 0.14}
+        return round(res_cost.get(resolution, 0.035), 4)
+
+    # ── Video token base: (W × H × FPS × Duration) / 1024 ──
+    # Pixel dimensions per resolution (16:9 base; other ratios have similar total pixels)
+    px = {"1080p": (1920, 1080), "720p": (1280, 720), "480p": (854, 480), "2K": (1920, 1080)}
+    w, h = px.get(resolution, (1280, 720))
+    fps = 24
+    tokens = (w * h * fps * duration) / 1024
+
+    is_1_5 = "1.5" in str(model_id) or "1-5" in str(model_id) or "1_5" in str(model_id)
+
+    if is_1_5:
+        # Seedance 1.5 Pro pricing
+        if is_draft:
+            # Draft: forced 480p, reduced coefficient
+            w_d, h_d = 854, 480
+            tokens = (w_d * h_d * fps * duration) / 1024
+            if generate_audio:
+                tokens *= 0.6  # coefficient with audio
+                rate = 2.4  # $/M tokens
+            else:
+                tokens *= 0.7  # coefficient without audio
+                rate = 1.2
+        elif is_offline:
+            rate = 1.2 if generate_audio else 0.6  # 50% of online
+        else:
+            rate = 2.4 if generate_audio else 1.2  # online standard
+        cost = (tokens / 1_000_000) * rate
+
+    else:
+        # Seedance 2.0 Pro pricing (per-second estimate)
+        per_sec = 0.06  # online
+        if is_draft:
+            per_sec = 0.03
+        elif is_offline:
+            per_sec = 0.03  # 50%
+        cost = per_sec * duration
+
+    # Add LLM prompt refinement cost (~$0.0005)
+    cost += 0.0005
+
+    return round(cost, 4)
+
+
+def format_cost_str(cost):
+    """Format cost for display: $0.49 or <$0.01."""
+    if cost < 0.01:
+        return "<$0.01"
+    return f"${cost:.2f}"
+
+COST_PER_SEC = {
+    "seedance-2": {"Online": 0.060, "Offline": 0.030},
+    "seedance-1-5": {"Online": 0.040, "Offline": 0.040},
+}
+COST_SEEDREAM_PER_IMAGE = 0.040
+COST_SEED18_INPUT_PER_TOKEN = 0.000001
+COST_SEED18_OUTPUT_PER_TOKEN = 0.000002
+
+GENERATION_LOG_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "generation_log.csv"
+)
+
 # ──────────────────────────────────────────────
 # HELPERS
 # ──────────────────────────────────────────────
@@ -139,6 +209,8 @@ def save_video_with_metadata(video_url, prompt_text, scene_description, resoluti
             f.write(f"Draft Mode: {is_draft}\n")
             f.write(f"Offline Mode: {is_offline}\n")
             f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            _est = estimate_cost(model_id, resolution, duration, generate_audio, is_draft, is_offline)
+            f.write(f"Estimated Cost: {format_cost_str(_est)}\n")
     except Exception as e:
         pass  # Info file is optional
     
@@ -187,6 +259,8 @@ def save_image_with_metadata(image_url, prompt_text, style_preset="None", aspect
             if optimize_prompt_mode in ("standard", "fast"):
                 f.write(f"Optimize prompt: {optimize_prompt_mode}\n")
             f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            _est = estimate_cost(model_id or "", resolution)
+            f.write(f"Estimated Cost: {format_cost_str(_est)}\n")
     except Exception:
         pass
     return {"image_path": image_path, "info_file_path": info_file_path}
@@ -223,6 +297,57 @@ def _has_camera_movement(shots_data):
         if m2 and m2 not in ("not specified", "static", ""):
             return True
     return False
+
+
+def _estimate_cost(model, duration=None, resolution=None,
+                   service_tier="Online", input_tokens=0, output_tokens=0):
+    cost = 0.0
+    breakdown = []
+    m = model.lower()
+
+    if "seedance-2" in m:
+        tier = service_tier if service_tier in ("Online", "Offline") else "Online"
+        rate = COST_PER_SEC["seedance-2"][tier]
+        base = rate * (duration or 10)
+        cost += base
+        breakdown.append(f"Seedance 2.0 {duration}s {resolution} ({tier}): ${base:.4f}")
+    elif "seedance-1-5" in m:
+        rate = COST_PER_SEC["seedance-1-5"]["Online"]
+        base = rate * (duration or 10)
+        cost += base
+        breakdown.append(f"Seedance 1.5 {duration}s {resolution}: ${base:.4f}")
+    elif "seedream" in m:
+        cost += COST_SEEDREAM_PER_IMAGE
+        breakdown.append(f"Seedream image: ${COST_SEEDREAM_PER_IMAGE:.4f}")
+
+    if input_tokens or output_tokens:
+        llm_cost = (input_tokens * COST_SEED18_INPUT_PER_TOKEN) + \
+                   (output_tokens * COST_SEED18_OUTPUT_PER_TOKEN)
+        cost += llm_cost
+        breakdown.append(f"Seed 1.8 {input_tokens}in/{output_tokens}out: ${llm_cost:.4f}")
+
+    return {"total_usd": round(cost, 4), "breakdown": breakdown}
+
+
+def _log_generation_cost(model, duration, resolution, service_tier,
+                          cost_dict, prompt_preview=""):
+    import csv
+    file_exists = os.path.isfile(GENERATION_LOG_PATH)
+    row = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "model": model,
+        "duration_s": duration or "",
+        "resolution": resolution or "",
+        "service_tier": service_tier or "",
+        "cost_usd": cost_dict["total_usd"],
+        "breakdown": " | ".join(cost_dict["breakdown"]),
+        "prompt_preview": (prompt_preview or "")[:80],
+    }
+    with open(GENERATION_LOG_PATH, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=row.keys())
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row)
 
 
 def generate_video(prompt_text, scene_description, images=[], videos=[], audios=[], 

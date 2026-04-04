@@ -34,3 +34,6 @@ backups/
 ui_app_pre_storyboard.py
 .env.save
 data/
+
+# Generation cost log (generator.py)
+generation_log.csv

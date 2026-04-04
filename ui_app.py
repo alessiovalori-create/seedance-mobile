@@ -19,7 +19,7 @@ import streamlit.components.v1 as components
 import base64 as _b64
 
 from builder import build_prompt as build_video_prompt, analyze_cinematography, build_image_prompt
-from generator import generate_video, generate_seedream_image, SEEDANCE_1_5_MODEL_ID, SEEDANCE_2_0_MODEL_ID, SEEDREAM_5_0_LITE_MODEL_ID, SEEDREAM_4_5_MODEL_ID, PEXELS_API_KEY, UNSPLASH_API_KEY
+from generator import generate_video, generate_seedream_image, SEEDANCE_1_5_MODEL_ID, SEEDANCE_2_0_MODEL_ID, SEEDREAM_5_0_LITE_MODEL_ID, SEEDREAM_4_5_MODEL_ID, PEXELS_API_KEY, UNSPLASH_API_KEY, estimate_cost, format_cost_str
 GENERATION_ENABLED = False  # ← Set to True to re-enable video/image generation API calls
 try:
     from streamlit_sortables import sort_items
@@ -1325,6 +1325,7 @@ def toggle_refs_selection(image_id, source="pexels"):
         "pexels": "refs_selected_pexels",
         "unsplash": "refs_selected_unsplash",
         "art_chicago": "refs_selected_art_chicago",
+        "met": "refs_selected_met",
     }
     key = _key_map.get(source, "refs_selected_unsplash")
 
@@ -1418,6 +1419,33 @@ def _refs_resolve_selected_image_meta(image_id, source="pexels"):
                 "provenance": prov,
                 "original_width": prov.get("original_width"),
                 "original_height": prov.get("original_height"),
+            }
+
+        if source == "met":
+            by_m = st.session_state.get("_refs_met_by_id") or {}
+            rec = by_m.get(sid)
+            if not rec:
+                return None
+            url = rec.get("full_url") or rec.get("image_url")
+            if not url:
+                return None
+            title = rec.get("title") or "Untitled"
+            artist = rec.get("artist_display") or "Unknown"
+            cap = f"{title} — {artist}"[:140]
+            return {
+                "source": "met",
+                "id": sid,
+                "url": url,
+                "caption": cap,
+                "provenance": {
+                    "vendor": "met",
+                    "api_asset_id": sid,
+                    "url": url,
+                    "title": title,
+                    "artist_display": artist,
+                },
+                "original_width": rec.get("original_width"),
+                "original_height": rec.get("original_height"),
             }
     except Exception:
         # Never break selection UI if metadata resolution fails.
@@ -1543,7 +1571,8 @@ def _refs_send_selected_to_storyboard():
     p_ids = set(st.session_state.get("refs_selected_pexels") or set())
     u_ids = set(st.session_state.get("refs_selected_unsplash") or set())
     a_ids = set(st.session_state.get("refs_selected_art_chicago") or set())
-    if not p_ids and not u_ids and not a_ids:
+    m_ids = set(st.session_state.get("refs_selected_met") or set())
+    if not p_ids and not u_ids and not a_ids and not m_ids:
         return 0, 0, 0
 
     if st.session_state.sb_mode not in ("new", "loaded"):
@@ -1556,6 +1585,7 @@ def _refs_send_selected_to_storyboard():
     by_p = st.session_state.get("_refs_pexels_by_id") or {}
     by_u = st.session_state.get("_refs_unsplash_by_id") or {}
     by_a = st.session_state.get("_refs_art_chicago_by_id") or {}
+    by_m = st.session_state.get("_refs_met_by_id") or {}
     added = 0
     skipped_dup = 0
     failed = 0
@@ -1693,9 +1723,57 @@ def _refs_send_selected_to_storyboard():
         existing_urls.add(url)
         added += 1
 
+    for sid in _sort_ref_ids(m_ids):
+        rec = by_m.get(str(sid))
+        if not rec:
+            failed += 1
+            continue
+        url = rec.get("full_url") or rec.get("image_url")
+        if not url:
+            failed += 1
+            continue
+        if url in existing_urls:
+            skipped_dup += 1
+            continue
+        path = _refs_download_url_to_downloads(url, f"met_{sid}.jpg")
+        if not path:
+            failed += 1
+            continue
+        if path in existing_paths:
+            skipped_dup += 1
+            continue
+        title = rec.get("title") or "Untitled"
+        artist = rec.get("artist_display") or "Unknown"
+        cap = f"{title} — {artist}"[:120]
+        prov = {
+            "vendor": "met",
+            "api_asset_id": str(sid),
+            "high_res_url": url,
+            "title": title,
+            "artist_display": artist,
+        }
+        item = {
+            "image_path": path,
+            "url": url,
+            "src": url,
+            "caption": cap,
+            "prompt": "",
+            "specs": {},
+            "project_id": st.session_state.get("active_project_id"),
+            "created_at": datetime.now().isoformat(),
+            "reference_provenance": prov,
+            "original_width": rec.get("original_width"),
+            "original_height": rec.get("original_height"),
+        }
+        st.session_state.sb_active_images.append(item)
+        existing_paths.add(path)
+        existing_urls.add(url)
+        added += 1
+
     st.session_state.refs_selected_pexels = set()
     st.session_state.refs_selected_unsplash = set()
     st.session_state.refs_selected_art_chicago = set()
+    st.session_state.refs_selected_met = set()
     st.session_state.selected_images = {}
     _autosave_storyboard_snapshot()
     return added, skipped_dup, failed
@@ -1706,12 +1784,14 @@ def _refs_send_selected_to_assets():
     p_ids = set(st.session_state.get("refs_selected_pexels") or set())
     u_ids = set(st.session_state.get("refs_selected_unsplash") or set())
     a_ids = set(st.session_state.get("refs_selected_art_chicago") or set())
-    if not p_ids and not u_ids and not a_ids:
+    m_ids = set(st.session_state.get("refs_selected_met") or set())
+    if not p_ids and not u_ids and not a_ids and not m_ids:
         return 0, 0
 
     by_p = st.session_state.get("_refs_pexels_by_id") or {}
     by_u = st.session_state.get("_refs_unsplash_by_id") or {}
     by_a = st.session_state.get("_refs_art_chicago_by_id") or {}
+    by_m = st.session_state.get("_refs_met_by_id") or {}
     saved = 0
     failed = 0
 
@@ -1801,9 +1881,39 @@ def _refs_send_selected_to_assets():
         else:
             failed += 1
 
+    for sid in _sort_ref_ids(m_ids):
+        rec = by_m.get(str(sid))
+        if not rec:
+            failed += 1
+            continue
+        url = rec.get("full_url") or rec.get("image_url")
+        if not url:
+            failed += 1
+            continue
+        path = _refs_download_url_to_downloads(url, f"met_{sid}.jpg")
+        if not path:
+            failed += 1
+            continue
+        result = add_to_assets(
+            source_path=path,
+            original_name=f"met_{sid}.jpg",
+            provenance={
+                "source": "met",
+                "id": str(sid),
+                "title": rec.get("title", ""),
+                "artist": rec.get("artist_display", ""),
+                "url": url,
+            },
+        )
+        if result:
+            saved += 1
+        else:
+            failed += 1
+
     st.session_state.refs_selected_pexels = set()
     st.session_state.refs_selected_unsplash = set()
     st.session_state.refs_selected_art_chicago = set()
+    st.session_state.refs_selected_met = set()
     st.session_state.selected_images = {}
     return saved, failed
 
@@ -3079,6 +3189,10 @@ if check_password():
         st.session_state.refs_selected_unsplash = set()
     if "refs_selected_art_chicago" not in st.session_state:
         st.session_state.refs_selected_art_chicago = set()
+    if "refs_selected_met" not in st.session_state:
+        st.session_state.refs_selected_met = set()
+    if "_refs_met_by_id" not in st.session_state:
+        st.session_state._refs_met_by_id = {}
     if "refs_selected_pexels_videos" not in st.session_state:
         st.session_state.refs_selected_pexels_videos = set()
     if "_refs_pexels_video_by_id" not in st.session_state:
@@ -3091,6 +3205,12 @@ if check_password():
         st.session_state._refs_pixabay_video_by_id = {}
     if "_refs_pixabay_video_ids_current" not in st.session_state:
         st.session_state._refs_pixabay_video_ids_current = []
+    if "refs_selected_coverr_videos" not in st.session_state:
+        st.session_state.refs_selected_coverr_videos = set()
+    if "_refs_coverr_video_by_id" not in st.session_state:
+        st.session_state._refs_coverr_video_by_id = {}
+    if "_refs_coverr_video_ids_current" not in st.session_state:
+        st.session_state._refs_coverr_video_ids_current = []
     if "selected_images" not in st.session_state:
         # Map: "<source>:<id>" -> {source,id,url,caption,provenance,...}
         st.session_state.selected_images = {}
@@ -6294,6 +6414,15 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
                             latest = ca
             return latest
 
+        def _get_project_spent(pid):
+            """Sum estimated_cost from all gallery items for this project."""
+            total = 0.0
+            for coll in ["gallery_videos", "gallery_images"]:
+                for item in st.session_state.get(coll, []):
+                    if item.get("project_id") == pid:
+                        total += item.get("estimated_cost", 0.0)
+            return total
+
         # ── Build project cards list (thumbnail + metadata for HTML grid) ──
         cards = []
         for proj in project_list:
@@ -6305,6 +6434,8 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
             created_disp = created_raw[:16].replace("T", " ") if created_raw else "—"
             last_mod = _get_project_last_modified(pid)
             last_disp = last_mod[:16].replace("T", " ") if last_mod else "—"
+            _spent = _get_project_spent(pid)
+            _spent_str = f"${_spent:.2f}" if _spent >= 0.01 else "$0.00"
             cards.append({
                 "id": pid,
                 "name": pname,
@@ -6312,6 +6443,7 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
                 "created": created_disp,
                 "last_mod": last_disp,
                 "is_active": is_active,
+                "spent": _spent_str,
             })
 
         _proj_pick_key = "proj_pick_act"
@@ -6438,6 +6570,7 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
                             f'<span style="color:#3a3a38;font-size:1.6rem;font-weight:300;'
                             f'font-family:Open Sans,sans-serif;">{init}</span>'
                         )
+                    _spent_val = _html_stdlib.escape(c["spent"])
                     cards_html_parts.append(
                         f'''
                         <div class="proj-cell" onclick="projPick('{_safe_id}')">
@@ -6445,6 +6578,7 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
                             <div class="proj-title">{_cname}</div>
                             <div class="proj-meta">Created: {_cr}</div>
                             <div class="proj-meta">Last modified: {_lm}</div>
+                            <div class="proj-spent">Spent: {_spent_val}</div>
                         </div>'''
                     )
                 cards_html = "".join(cards_html_parts)
@@ -6489,6 +6623,14 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
                         font-size:0.62rem;
                         line-height:1.35;
                         margin:0;
+                    }}
+                    .proj-spent {{
+                        color:#FFEB3B;
+                        font-size:0.68rem;
+                        font-weight:700;
+                        line-height:1.35;
+                        margin:2px 0 0;
+                        font-family:Open Sans,sans-serif;
                     }}
                 </style>
                 <div class="proj-grid">{cards_html}</div>
@@ -6794,7 +6936,7 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
         st.markdown("### REFERENCES")
         st.caption("Reference materials for prompt building in the current project.")
 
-        src_tab1, src_tab2, src_tab3, src_tab4, src_tab5 = st.tabs(["PEXELS", "UNSPLASH", "Art Chicago", "Pexels Video", "Pixabay Video"])
+        src_tab1, src_tab2, src_tab3, src_tab4, src_tab5, src_tab6, src_tab7 = st.tabs(["PEXELS", "UNSPLASH", "Art Chicago", "The Met", "Pexels Video", "Pixabay Video", "Coverr Video"])
 
         with src_tab1:
             pexels_query = st.text_input(
@@ -7558,6 +7700,208 @@ try { inp.blur(); } catch (e3) {}
                     st.error(f"Failed to contact Art Chicago API: {e}")
 
         with src_tab4:
+            met_query = st.text_input(
+                "Search The Metropolitan Museum of Art",
+                placeholder="Type a keyword (e.g. Rembrandt, chiaroscuro, landscape, portrait...)",
+                key="met_query",
+            )
+            met_limit = st.slider(
+                "Results",
+                min_value=5,
+                max_value=20,
+                value=12,
+                step=1,
+                key="met_limit",
+            )
+
+            _refs_met_n_sel = len(st.session_state.get("refs_selected_met") or set())
+            if _refs_met_n_sel > 0:
+                with st.container(border=True):
+                    st.markdown(
+                        '<div style="height:1px;background:linear-gradient(90deg,transparent,rgba(245,245,220,0.4),transparent);'
+                        'margin:0 0 0.65rem;"></div>'
+                        f'<p style="margin:0 0 12px;color:#9E9E8A;font-size:0.74rem;font-family:\'Open Sans\',sans-serif;">'
+                        f'<span style="color:var(--refs-cream, #F5F5DC);font-weight:700;">{_refs_met_n_sel}</span> '
+                        f"image(s) selected — send to workspace</p>",
+                        unsafe_allow_html=True,
+                    )
+                    col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 1], gap="small")
+                    with col_btn1:
+                        if st.button(
+                            "STORYBOARD",
+                            key="refs_bar_storyboard_btn_met",
+                            use_container_width=True,
+                        ):
+                            _a, _dup, _fail = _refs_send_selected_to_storyboard()
+                            _parts = []
+                            if _a:
+                                _parts.append(f"Added {_a} image(s) to Storyboard")
+                            if _dup:
+                                _parts.append(f"{_dup} duplicate(s) skipped")
+                            if _fail:
+                                _parts.append(f"{_fail} failed")
+                            st.toast(". ".join(_parts) if _parts else "Nothing added.")
+                            st.rerun()
+                    with col_btn2:
+                        if st.button(
+                            "ASSET",
+                            key="refs_bar_asset_btn_met",
+                            use_container_width=True,
+                        ):
+                            _sv, _fl = _refs_send_selected_to_assets()
+                            if _sv:
+                                st.toast(f"Saved {_sv} image(s) to Assets" + (f" ({_fl} failed)" if _fl else ""))
+                            elif _fl:
+                                st.toast(f"Could not save ({_fl} failed).")
+                            else:
+                                st.toast("Nothing saved.")
+                            st.rerun()
+                    with col_btn3:
+                        if st.button(
+                            "CLEAR",
+                            key="refs_met_clear_sel",
+                            use_container_width=True,
+                            disabled=(_refs_met_n_sel == 0),
+                        ):
+                            st.session_state.refs_selected_met = set()
+                            if "selected_images" in st.session_state:
+                                for _k in list(st.session_state.selected_images.keys()):
+                                    if str(_k).startswith("met:"):
+                                        del st.session_state.selected_images[_k]
+                            st.rerun()
+
+            if met_query and str(met_query).strip():
+                _met_term = str(met_query).strip()
+                try:
+                    # Step 1: search → get objectIDs
+                    resp = requests.get(
+                        "https://collectionapi.metmuseum.org/public/collection/v1/search",
+                        params={"q": _met_term, "hasImages": "true", "isPublicDomain": "true"},
+                        timeout=20,
+                    )
+                    if resp.status_code != 200:
+                        st.error(f"Met API error ({resp.status_code}).")
+                    else:
+                        payload = resp.json() or {}
+                        object_ids = (payload.get("objectIDs") or [])[: int(met_limit)]
+
+                        if not object_ids:
+                            st.warning("No public-domain artworks found.")
+                        else:
+                            # Step 2: fetch details for each object
+                            _met_by_id = {}
+                            with st.spinner(f"Loading {len(object_ids)} artworks from The Met..."):
+                                for oid in object_ids:
+                                    try:
+                                        obj_resp = requests.get(
+                                            f"https://collectionapi.metmuseum.org/public/collection/v1/objects/{oid}",
+                                            timeout=10,
+                                        )
+                                        if obj_resp.status_code != 200:
+                                            continue
+                                        obj = obj_resp.json() or {}
+                                        img_url = obj.get("primaryImageSmall") or obj.get("primaryImage") or ""
+                                        if not img_url or not obj.get("isPublicDomain"):
+                                            continue
+                                        _sid = str(oid)
+                                        title = obj.get("title") or "Untitled"
+                                        artist = obj.get("artistDisplayName") or "Unknown"
+                                        _met_by_id[_sid] = {
+                                            "id": oid,
+                                            "title": title,
+                                            "artist_display": artist,
+                                            "image_url": img_url,
+                                            "full_url": obj.get("primaryImage") or img_url,
+                                            "original_width": None,
+                                            "original_height": None,
+                                        }
+                                    except Exception:
+                                        continue
+
+                            st.session_state["_refs_met_by_id"] = _met_by_id
+
+                            if st.session_state.get("_refs_met_query_sig") != _met_term:
+                                st.session_state._refs_met_query_sig = _met_term
+                                st.session_state.refs_selected_met = set()
+                                if "selected_images" in st.session_state:
+                                    for _k in list(st.session_state.selected_images.keys()):
+                                        if str(_k).startswith("met:"):
+                                            del st.session_state.selected_images[_k]
+
+                            def _refs_met_bridge_cb():
+                                _refs_sel_bridge_on_change("refs_met_sel_bridge", "met")
+
+                            st.text_input(
+                                "refs_met_sel_bridge",
+                                key="refs_met_sel_bridge",
+                                on_change=_refs_met_bridge_cb,
+                                label_visibility="collapsed",
+                            )
+
+                            _met_gal_exp = (
+                                '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" '
+                                'xmlns="http://www.w3.org/2000/svg">'
+                                '<path d="M1 4.5V1H4.5M7.5 1H11V4.5M11 7.5V11H7.5M4.5 11H1V7.5" '
+                                'stroke="currentColor" stroke-width="1.6" stroke-linecap="round" '
+                                'stroke-linejoin="round"/></svg>'
+                            )
+
+                            _met_cards_html = ""
+                            _met_n = 0
+                            for _sid, obj_data in _met_by_id.items():
+                                img_url = obj_data.get("image_url", "")
+                                full_url = obj_data.get("full_url", img_url)
+                                title = obj_data.get("title", "Untitled")
+                                artist = obj_data.get("artist_display", "Unknown")
+                                _safe_src = str(img_url).replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;")
+                                _zoom_attr = str(full_url).replace("&", "&amp;").replace('"', "&quot;").replace("'", "&#39;")
+                                _cap_line = _html_stdlib.escape(f"{title} — {artist}"[:140])
+                                _is_sel = _sid in st.session_state.refs_selected_met
+                                _wrap_sel = " ref-stock-selected" if _is_sel else ""
+                                _wrap_nd = " ref-stock-no-dims"
+                                _sel_chk = '<div class="ref-stock-sel-check">&#10003;</div>' if _is_sel else ""
+
+                                _met_n += 1
+                                _met_cards_html += f"""<div class="gal-card ref-stock-card" onclick="refsMetSel('{_sid}')">
+<div class="gal-badge">{_met_n}</div>
+<div class="ref-stock-img-wrap{_wrap_sel}{_wrap_nd}">
+<div class="ref-stock-ph" aria-hidden="true"></div>
+<div class="gal-expand" data-zoom="{_zoom_attr}" onclick="event.stopPropagation();event.preventDefault();var z=this.getAttribute('data-zoom');if(z)window.open(z,'_blank','noopener,noreferrer');" title="Open full size">{_met_gal_exp}</div>
+{_sel_chk}
+<img class="ref-stock-img" src="{_safe_src}" alt="" loading="lazy" decoding="async" draggable="false"/>
+</div>
+<div class="gal-caption">{_cap_line}</div>
+</div>"""
+
+                            if not _met_cards_html:
+                                st.warning("No artworks with valid images found.")
+                            else:
+                                _met_h = min(5600, 360 + _met_n * 280)
+                                _met_html = (
+                                    _REFS_STOCK_IFRAME_CSS
+                                    + f'<div class="ref-stock-masonry">{_met_cards_html}</div>'
+                                    + """
+<script>
+function refsMetSel(id) {
+var inp = window.parent.document.querySelector('input[aria-label="refs_met_sel_bridge"]');
+if (!inp) return;
+var ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+var payload = String(id) + '|' + Date.now();
+ns.call(inp, payload);
+inp.dispatchEvent(new Event('input', {bubbles:true}));
+inp.dispatchEvent(new Event('change', {bubbles:true}));
+try { inp.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: payload })); } catch (e) {}
+try { inp.focus({ preventScroll: true }); } catch (e2) {}
+try { inp.blur(); } catch (e3) {}
+}
+</script>"""
+                                )
+                                components.html(_met_html, height=_met_h, scrolling=True)
+
+                except requests.RequestException as e:
+                    st.error(f"Failed to contact Met Museum API: {e}")
+
+        with src_tab5:
             pexels_video_query = st.text_input(
                 "Search Pexels Video",
                 placeholder="Type a keyword (e.g. dancer, city night, cinematic portrait...)",
@@ -7794,7 +8138,7 @@ try { inp.blur(); } catch (e3) {}
                     except requests.RequestException as e:
                         st.error(f"Failed to contact Pexels Video API: {e}")
 
-        with src_tab5:
+        with src_tab6:
             pixabay_video_query = st.text_input(
                 "Search Pixabay Video",
                 placeholder="Type a keyword (e.g. ocean, timelapse, abstract art...)",
@@ -8003,6 +8347,208 @@ try { inp.blur(); } catch (e3) {}
                                                 )
                     except requests.RequestException as e:
                         st.error(f"Failed to contact Pixabay Video API: {e}")
+
+        with src_tab7:
+            coverr_video_query = st.text_input(
+                "Search Coverr Video",
+                placeholder="Type a keyword (e.g. crane shot, dolly, aerial, cinematic...)",
+                key="coverr_video_query",
+            )
+            coverr_video_limit = st.slider(
+                "Results",
+                min_value=3,
+                max_value=15,
+                value=9,
+                step=3,
+                key="coverr_video_limit",
+            )
+
+            if coverr_video_query and str(coverr_video_query).strip():
+                coverr_api_key = os.getenv("COVERR_API_KEY")
+                if not coverr_api_key:
+                    st.error(
+                        "COVERR_API_KEY is missing. Add it to environment variables."
+                    )
+                else:
+
+                    def _on_coverr_video_sel_change(vid_id: str):
+                        vid_id = str(vid_id)
+                        box_key = f"refs_coverr_video_sel_{vid_id}"
+                        checked = bool(st.session_state.get(box_key, False))
+                        if checked:
+                            st.session_state.refs_selected_coverr_videos.add(vid_id)
+                            meta = (st.session_state.get("_refs_coverr_video_by_id") or {}).get(vid_id)
+                            if meta:
+                                st.session_state.selected_images[f"coverr_video:{vid_id}"] = meta
+                        else:
+                            st.session_state.refs_selected_coverr_videos.discard(vid_id)
+                            st.session_state.selected_images.pop(f"coverr_video:{vid_id}", None)
+
+                    _prev_cvr_ids = list(st.session_state.get("_refs_coverr_video_ids_current") or [])
+                    _cvr_term = str(coverr_video_query).strip()
+                    try:
+                        resp = requests.get(
+                            "https://api.coverr.co/videos",
+                            headers={"Authorization": f"Bearer {coverr_api_key}"},
+                            params={
+                                "query": _cvr_term,
+                                "page_size": int(coverr_video_limit),
+                            },
+                            timeout=20,
+                        )
+                        if resp.status_code != 200:
+                            st.error(f"Coverr Video API error ({resp.status_code}). {resp.text[:200]}")
+                        else:
+                            payload = resp.json() or {}
+                            hits = payload.get("hits") or []
+
+                            _cvr_by_id = {}
+                            _cvr_ids = []
+                            for v in hits:
+                                _vid = v.get("id") or v.get("video_id")
+                                if _vid is None:
+                                    continue
+                                _playback = v.get("playback_id")
+                                if not _playback:
+                                    continue
+                                _mp4 = f"https://stream.mux.com/{_playback}/medium.mp4"
+                                _uid = str(_vid)
+                                title = v.get("title") or ""
+                                duration = v.get("duration")
+                                try:
+                                    dur_str = f"{float(duration):.0f}s" if duration else ""
+                                except (ValueError, TypeError):
+                                    dur_str = ""
+                                cap = f"{title[:40]} · {dur_str}" if dur_str else title[:40]
+                                _cvr_by_id[_uid] = {
+                                    "source": "coverr_video",
+                                    "id": _uid,
+                                    "url": _mp4,
+                                    "video_url": _mp4,
+                                    "caption": cap,
+                                    "title": title,
+                                    "tags": v.get("tags") or [],
+                                    "thumbnail": v.get("thumbnail") or "",
+                                }
+                                _cvr_ids.append(_uid)
+
+                            st.session_state["_refs_coverr_video_by_id"] = _cvr_by_id
+                            st.session_state["_refs_coverr_video_ids_current"] = _cvr_ids
+
+                            if st.session_state.get("_refs_coverr_video_query_sig") != _cvr_term:
+                                st.session_state._refs_coverr_video_query_sig = _cvr_term
+                                st.session_state.refs_selected_coverr_videos = set()
+                                for _k in list(st.session_state.selected_images.keys()):
+                                    if str(_k).startswith("coverr_video:"):
+                                        del st.session_state.selected_images[_k]
+                                for _vid in _prev_cvr_ids + list(_cvr_ids):
+                                    st.session_state[f"refs_coverr_video_sel_{_vid}"] = False
+
+                            _n_cvr_sel = len(st.session_state.refs_selected_coverr_videos)
+                            if _n_cvr_sel > 0:
+                                with st.container(border=True):
+                                    st.markdown(
+                                        '<div style="height:1px;background:linear-gradient(90deg,transparent,rgba(245,245,220,0.4),transparent);'
+                                        'margin:0 0 0.65rem;"></div>'
+                                        f'<p style="margin:0 0 12px;color:#9E9E8A;font-size:0.74rem;font-family:\'Open Sans\',sans-serif;">'
+                                        f'<span style="color:var(--refs-cream, #F5F5DC);font-weight:700;">{_n_cvr_sel}</span> '
+                                        f"video(s) selected — send to workspace</p>",
+                                        unsafe_allow_html=True,
+                                    )
+                                    col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 1], gap="small")
+                                    with col_btn1:
+                                        if st.button(
+                                            "STORYBOARD",
+                                            key="refs_bar_storyboard_btn_coverr_video",
+                                            use_container_width=True,
+                                        ):
+                                            st.toast("Coverr videos stored in session_state.")
+                                            st.rerun()
+                                    with col_btn2:
+                                        if st.button(
+                                            "ASSET",
+                                            key="refs_bar_asset_btn_coverr_video",
+                                            use_container_width=True,
+                                        ):
+                                            _vby = st.session_state.get("_refs_coverr_video_by_id") or {}
+                                            _v_saved = 0
+                                            _v_failed = 0
+                                            for _vid in sorted(st.session_state.refs_selected_coverr_videos):
+                                                _vmeta = _vby.get(str(_vid))
+                                                if not _vmeta or not _vmeta.get("video_url"):
+                                                    _v_failed += 1
+                                                    continue
+                                                _vpath = _refs_download_url_to_downloads(
+                                                    _vmeta["video_url"], f"coverr_video_{_vid}.mp4"
+                                                )
+                                                if not _vpath:
+                                                    _v_failed += 1
+                                                    continue
+                                                _vresult = add_to_assets(
+                                                    source_path=_vpath,
+                                                    original_name=f"coverr_video_{_vid}.mp4",
+                                                    provenance={
+                                                        "source": "coverr_video",
+                                                        "id": str(_vid),
+                                                        "caption": _vmeta.get("caption", ""),
+                                                        "video_url": _vmeta["video_url"],
+                                                    },
+                                                )
+                                                if _vresult:
+                                                    _v_saved += 1
+                                                else:
+                                                    _v_failed += 1
+                                            if _v_saved:
+                                                st.toast(f"Saved {_v_saved} video(s) to Assets" + (f" ({_v_failed} failed)" if _v_failed else ""))
+                                            elif _v_failed:
+                                                st.toast(f"Could not save ({_v_failed} failed).")
+                                            else:
+                                                st.toast("Nothing saved — select videos first.")
+                                            st.rerun()
+                                    with col_btn3:
+                                        if st.button(
+                                            "CLEAR",
+                                            key="refs_coverr_video_clear_sel",
+                                            use_container_width=True,
+                                            disabled=(_n_cvr_sel == 0),
+                                        ):
+                                            st.session_state.refs_selected_coverr_videos = set()
+                                            for _k in list(st.session_state.selected_images.keys()):
+                                                if str(_k).startswith("coverr_video:"):
+                                                    del st.session_state.selected_images[_k]
+                                            for _vid in st.session_state.get("_refs_coverr_video_ids_current") or []:
+                                                st.session_state[f"refs_coverr_video_sel_{_vid}"] = False
+                                            st.rerun()
+
+                            if not _cvr_ids:
+                                st.warning("No videos found.")
+                            else:
+                                VIDEO_COLS = 3
+                                for row_start in range(0, len(_cvr_ids), VIDEO_COLS):
+                                    cols = st.columns(VIDEO_COLS, gap="small")
+                                    for ci in range(VIDEO_COLS):
+                                        idx = row_start + ci
+                                        if idx >= len(_cvr_ids):
+                                            break
+                                        vid_id = _cvr_ids[idx]
+                                        meta = _cvr_by_id.get(vid_id) or {}
+                                        with cols[ci]:
+                                            if meta.get("video_url"):
+                                                st.video(meta["video_url"])
+                                            _rv_left, _rv_right = st.columns([4, 1], gap="small")
+                                            with _rv_left:
+                                                st.caption(meta.get("caption") or "")
+                                            with _rv_right:
+                                                box_key = f"refs_coverr_video_sel_{vid_id}"
+                                                st.checkbox(
+                                                    "Select",
+                                                    value=vid_id in st.session_state.refs_selected_coverr_videos,
+                                                    key=box_key,
+                                                    on_change=_on_coverr_video_sel_change,
+                                                    args=(vid_id,),
+                                                )
+                    except requests.RequestException as e:
+                        st.error(f"Failed to contact Coverr API: {e}")
 
     elif st.session_state.get("active_page") == "storyboard":
         if "sbi_nav" not in st.session_state:
@@ -9136,6 +9682,34 @@ try { inp.blur(); } catch (e3) {}
         _opt_val = st.session_state.get("s15_opt_prompt", "") if model_sel == "SEEDANCE 1.5" else (st.session_state.get("s2_opt_prompt", "") if model_sel == "SEEDANCE 2.0" else st.session_state.get("sd_opt_prompt", ""))
         st.text_area(label="RAW PROMPT", value=_raw_val, height=100)
         st.text_area(label="OPTIMISED PROMPT", value=_opt_val, height=100)
+        # ── Estimated cost display ──
+        if _opt_val and _opt_val.strip() and not _opt_val.startswith("[ERROR"):
+            if model_sel == "SEEDANCE 2.0":
+                _est_cost = estimate_cost(
+                    SEEDANCE_2_0_MODEL_ID, resolution, duration, gen_audio,
+                    is_draft=(gen_mode == "Draft Mode (Preview)"),
+                    is_offline=(gen_mode == "Offline (50% Cost)"),
+                )
+            elif model_sel == "SEEDANCE 1.5":
+                _est_cost = estimate_cost(
+                    "seedance-1.5-pro", s15_resolution, s15_duration,
+                    s15_gen_audio,
+                    is_draft=(s15_gen_mode == "Draft Mode (Preview)"),
+                    is_offline=(s15_gen_mode == "Offline (50% Cost)"),
+                )
+            else:
+                _est_cost = estimate_cost(
+                    SEEDREAM_5_0_LITE_MODEL_ID, sd_resolution,
+                )
+            st.markdown(
+                f'<p style="color:#FFEB3B;-webkit-text-fill-color:#FFEB3B;'
+                f'font-size:0.85rem;font-weight:700;font-family:Open Sans,sans-serif;'
+                f'margin:4px 0 0;padding:6px 10px;'
+                f'background:rgba(255,235,59,0.08);border-radius:4px;'
+                f'border-left:3px solid #FFEB3B;">'
+                f'Estimated cost: {format_cost_str(_est_cost)}</p>',
+                unsafe_allow_html=True,
+            )
 
         # S2.0 preview
         if model_sel == "SEEDANCE 2.0" and st.session_state.get("_do_preview_s2"):
@@ -9202,7 +9776,8 @@ try { inp.blur(); } catch (e3) {}
                     )
                     if isinstance(result, dict) and result.get("video"):
                         st.session_state.s2_last_result = result
-                        st.session_state.gallery_videos.append({"url": result["video"], "caption": (action_desc or "Seedance 2.0")[:50], "prompt": chosen_prompt, "resolution": resolution, "duration": duration, "aspect_ratio": aspect_ratio, "video_path": result.get("video_path"), "last_frame_path": result.get("last_frame_path"), "model": "Seedance 2.0", "created_at": datetime.now().isoformat(), "project_id": st.session_state.get("active_project_id")})
+                        _s2_est_cost = estimate_cost(SEEDANCE_2_0_MODEL_ID, resolution, duration, gen_audio, is_draft=(gen_mode == "Draft Mode (Preview)"), is_offline=(gen_mode == "Offline (50% Cost)"))
+                        st.session_state.gallery_videos.append({"url": result["video"], "caption": (action_desc or "Seedance 2.0")[:50], "prompt": chosen_prompt, "resolution": resolution, "duration": duration, "aspect_ratio": aspect_ratio, "video_path": result.get("video_path"), "last_frame_path": result.get("last_frame_path"), "model": "Seedance 2.0", "created_at": datetime.now().isoformat(), "project_id": st.session_state.get("active_project_id"), "estimated_cost": _s2_est_cost})
                         _settings = st.session_state.get("_json_dict")
                         if _settings is None:
                             _seeds_sv = [st.session_state.get(f"seed_input_{i}", "") for i in range(st.session_state.get("common_num_variations", 1))]
@@ -9302,7 +9877,8 @@ try { inp.blur(); } catch (e3) {}
                     )
                     if isinstance(s15_result, dict) and s15_result.get("video"):
                         st.session_state.s15_last_result = s15_result
-                        st.session_state.gallery_videos.append({"url": s15_result["video"], "caption": (s15_action_desc or "Seedance 1.5")[:50], "prompt": chosen_prompt, "resolution": s15_resolution, "duration": s15_duration, "aspect_ratio": s15_aspect_ratio, "video_path": s15_result.get("video_path"), "last_frame_path": s15_result.get("last_frame_path"), "model": "Seedance 1.5", "created_at": datetime.now().isoformat(), "project_id": st.session_state.get("active_project_id")})
+                        _s15_est_cost = estimate_cost("seedance-1.5-pro", s15_resolution, s15_duration, s15_gen_audio, is_draft=(s15_gen_mode == "Draft Mode (Preview)"), is_offline=(s15_gen_mode == "Offline (50% Cost)"))
+                        st.session_state.gallery_videos.append({"url": s15_result["video"], "caption": (s15_action_desc or "Seedance 1.5")[:50], "prompt": chosen_prompt, "resolution": s15_resolution, "duration": s15_duration, "aspect_ratio": s15_aspect_ratio, "video_path": s15_result.get("video_path"), "last_frame_path": s15_result.get("last_frame_path"), "model": "Seedance 1.5", "created_at": datetime.now().isoformat(), "project_id": st.session_state.get("active_project_id"), "estimated_cost": _s15_est_cost})
                         _settings = st.session_state.get("_json_dict")
                         if _settings is None:
                             _seeds_sv = [st.session_state.get(f"s15_seed_{i}", "") for i in range(st.session_state.get("s15_num_variations", 1))]
@@ -9421,7 +9997,8 @@ try { inp.blur(); } catch (e3) {}
                                         pass
                         for im in imgs:
                             if im.get("error"): continue
-                            st.session_state.gallery_images.append({"url": im.get("image_url", ""), "caption": (final_prompt or "Seedream 5.0")[:50], "prompt": final_prompt, "style": sd_style, "aspect_ratio": sd_ar, "resolution": sd_resolution, "specs": {}, "image_path": im.get("image_path"), "created_at": datetime.now().isoformat(), "project_id": st.session_state.get("active_project_id")})
+                            _sd_est_cost = estimate_cost(SEEDREAM_5_0_LITE_MODEL_ID, sd_resolution)
+                            st.session_state.gallery_images.append({"url": im.get("image_url", ""), "caption": (final_prompt or "Seedream 5.0")[:50], "prompt": final_prompt, "style": sd_style, "aspect_ratio": sd_ar, "resolution": sd_resolution, "specs": {}, "image_path": im.get("image_path"), "created_at": datetime.now().isoformat(), "project_id": st.session_state.get("active_project_id"), "estimated_cost": _sd_est_cost})
                         save_gallery_to_disk(st.session_state.gallery_videos, st.session_state.gallery_images)
                     else:
                         st.session_state.sd_last_result = None
