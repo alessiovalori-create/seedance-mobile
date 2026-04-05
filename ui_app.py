@@ -22,7 +22,7 @@ import base64 as _b64
 
 from builder import build_prompt as build_video_prompt, analyze_cinematography, build_image_prompt
 from generator import generate_video, generate_seedream_image, SEEDANCE_1_5_MODEL_ID, SEEDANCE_2_0_MODEL_ID, SEEDREAM_5_0_LITE_MODEL_ID, SEEDREAM_4_5_MODEL_ID, PEXELS_API_KEY, UNSPLASH_API_KEY, estimate_cost, format_cost_str
-GENERATION_ENABLED = False  # ← Set to True to re-enable video/image generation API calls
+GENERATION_ENABLED = True  # ← Set to False to disable generation
 try:
     from streamlit_sortables import sort_items
     SORTABLES_AVAILABLE = True
