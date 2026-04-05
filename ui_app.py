@@ -2,6 +2,8 @@
 # Upgrade: pip install --upgrade streamlit
 
 import os
+import hashlib
+from urllib.parse import quote
 from dotenv import load_dotenv
 
 # QUESTA È LA RIGA CHE APRE IL CAVEAU .ENV
@@ -1326,6 +1328,7 @@ def toggle_refs_selection(image_id, source="pexels"):
         "unsplash": "refs_selected_unsplash",
         "art_chicago": "refs_selected_art_chicago",
         "met": "refs_selected_met",
+        "google_arts": "refs_selected_google_arts",
     }
     key = _key_map.get(source, "refs_selected_unsplash")
 
@@ -1447,11 +1450,53 @@ def _refs_resolve_selected_image_meta(image_id, source="pexels"):
                 "original_width": rec.get("original_width"),
                 "original_height": rec.get("original_height"),
             }
+
+        if source == "google_arts":
+            by_g = st.session_state.get("_refs_google_arts_by_id") or {}
+            rec = by_g.get(sid)
+            if not rec:
+                return None
+            page_url = rec.get("page_url") or ""
+            img_url = rec.get("image_url") or ""
+            url = img_url or page_url
+            if not url:
+                return None
+            title = (rec.get("title") or "Arts & Culture")[:100]
+            cap = f"{title} · Google Arts & Culture"[:140]
+            return {
+                "source": "google_arts",
+                "id": sid,
+                "url": url,
+                "caption": cap,
+                "provenance": {
+                    "vendor": "google_arts",
+                    "page_url": page_url,
+                    "image_url": img_url,
+                    "title": rec.get("title", ""),
+                },
+                "original_width": None,
+                "original_height": None,
+            }
     except Exception:
         # Never break selection UI if metadata resolution fails.
         return None
 
     return None
+
+
+def _refs_google_arts_thumb_from_cse_item(item):
+    """Best-effort thumbnail URL from a Google Custom Search JSON API item."""
+    pm = (item or {}).get("pagemap") or {}
+    for key in ("cse_image", "cse_thumbnail"):
+        for it in pm.get(key) or []:
+            src = (it or {}).get("src")
+            if src:
+                return src
+    for mt in pm.get("metatags") or []:
+        og = (mt or {}).get("og:image")
+        if og:
+            return og
+    return ""
 
 
 def _refs_sel_bridge_on_change(bridge_key: str, source: str) -> None:
@@ -1572,7 +1617,8 @@ def _refs_send_selected_to_storyboard():
     u_ids = set(st.session_state.get("refs_selected_unsplash") or set())
     a_ids = set(st.session_state.get("refs_selected_art_chicago") or set())
     m_ids = set(st.session_state.get("refs_selected_met") or set())
-    if not p_ids and not u_ids and not a_ids and not m_ids:
+    g_ids = set(st.session_state.get("refs_selected_google_arts") or set())
+    if not p_ids and not u_ids and not a_ids and not m_ids and not g_ids:
         return 0, 0, 0
 
     if st.session_state.sb_mode not in ("new", "loaded"):
@@ -1586,6 +1632,7 @@ def _refs_send_selected_to_storyboard():
     by_u = st.session_state.get("_refs_unsplash_by_id") or {}
     by_a = st.session_state.get("_refs_art_chicago_by_id") or {}
     by_m = st.session_state.get("_refs_met_by_id") or {}
+    by_g = st.session_state.get("_refs_google_arts_by_id") or {}
     added = 0
     skipped_dup = 0
     failed = 0
@@ -1770,10 +1817,58 @@ def _refs_send_selected_to_storyboard():
         existing_urls.add(url)
         added += 1
 
+    for sid in _sort_ref_ids(g_ids):
+        rec = by_g.get(str(sid))
+        if not rec:
+            failed += 1
+            continue
+        img_url = (rec.get("image_url") or "").strip()
+        if not img_url or not (img_url.startswith("http://") or img_url.startswith("https://")):
+            failed += 1
+            continue
+        if img_url in existing_urls:
+            skipped_dup += 1
+            continue
+        path = _refs_download_url_to_downloads(img_url, f"google_arts_{sid}.jpg")
+        if not path:
+            failed += 1
+            continue
+        if path in existing_paths:
+            skipped_dup += 1
+            continue
+        title = (rec.get("title") or "Arts & Culture")[:120]
+        cap = f"{title} · Google Arts & Culture"[:120]
+        page_url = rec.get("page_url") or ""
+        prov = {
+            "vendor": "google_arts",
+            "api_asset_id": str(sid),
+            "image_url": img_url,
+            "page_url": page_url,
+            "title": rec.get("title", ""),
+        }
+        item = {
+            "image_path": path,
+            "url": img_url,
+            "src": img_url,
+            "caption": cap,
+            "prompt": "",
+            "specs": {},
+            "project_id": st.session_state.get("active_project_id"),
+            "created_at": datetime.now().isoformat(),
+            "reference_provenance": prov,
+            "original_width": None,
+            "original_height": None,
+        }
+        st.session_state.sb_active_images.append(item)
+        existing_paths.add(path)
+        existing_urls.add(img_url)
+        added += 1
+
     st.session_state.refs_selected_pexels = set()
     st.session_state.refs_selected_unsplash = set()
     st.session_state.refs_selected_art_chicago = set()
     st.session_state.refs_selected_met = set()
+    st.session_state.refs_selected_google_arts = set()
     st.session_state.selected_images = {}
     _autosave_storyboard_snapshot()
     return added, skipped_dup, failed
@@ -1785,13 +1880,15 @@ def _refs_send_selected_to_assets():
     u_ids = set(st.session_state.get("refs_selected_unsplash") or set())
     a_ids = set(st.session_state.get("refs_selected_art_chicago") or set())
     m_ids = set(st.session_state.get("refs_selected_met") or set())
-    if not p_ids and not u_ids and not a_ids and not m_ids:
+    g_ids = set(st.session_state.get("refs_selected_google_arts") or set())
+    if not p_ids and not u_ids and not a_ids and not m_ids and not g_ids:
         return 0, 0
 
     by_p = st.session_state.get("_refs_pexels_by_id") or {}
     by_u = st.session_state.get("_refs_unsplash_by_id") or {}
     by_a = st.session_state.get("_refs_art_chicago_by_id") or {}
     by_m = st.session_state.get("_refs_met_by_id") or {}
+    by_g = st.session_state.get("_refs_google_arts_by_id") or {}
     saved = 0
     failed = 0
 
@@ -1910,10 +2007,41 @@ def _refs_send_selected_to_assets():
         else:
             failed += 1
 
+    for sid in _sort_ref_ids(g_ids):
+        rec = by_g.get(str(sid))
+        if not rec:
+            failed += 1
+            continue
+        img_url = (rec.get("image_url") or "").strip()
+        if not img_url or not (img_url.startswith("http://") or img_url.startswith("https://")):
+            failed += 1
+            continue
+        path = _refs_download_url_to_downloads(img_url, f"google_arts_{sid}.jpg")
+        if not path:
+            failed += 1
+            continue
+        page_url = rec.get("page_url") or ""
+        result = add_to_assets(
+            source_path=path,
+            original_name=f"google_arts_{sid}.jpg",
+            provenance={
+                "source": "google_arts",
+                "id": str(sid),
+                "title": rec.get("title", ""),
+                "page_url": page_url,
+                "image_url": img_url,
+            },
+        )
+        if result:
+            saved += 1
+        else:
+            failed += 1
+
     st.session_state.refs_selected_pexels = set()
     st.session_state.refs_selected_unsplash = set()
     st.session_state.refs_selected_art_chicago = set()
     st.session_state.refs_selected_met = set()
+    st.session_state.refs_selected_google_arts = set()
     st.session_state.selected_images = {}
     return saved, failed
 
@@ -3193,6 +3321,10 @@ if check_password():
         st.session_state.refs_selected_met = set()
     if "_refs_met_by_id" not in st.session_state:
         st.session_state._refs_met_by_id = {}
+    if "refs_selected_google_arts" not in st.session_state:
+        st.session_state.refs_selected_google_arts = set()
+    if "_refs_google_arts_by_id" not in st.session_state:
+        st.session_state._refs_google_arts_by_id = {}
     if "refs_selected_pexels_videos" not in st.session_state:
         st.session_state.refs_selected_pexels_videos = set()
     if "_refs_pexels_video_by_id" not in st.session_state:
@@ -6936,7 +7068,18 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
         st.markdown("### REFERENCES")
         st.caption("Reference materials for prompt building in the current project.")
 
-        src_tab1, src_tab2, src_tab3, src_tab4, src_tab5, src_tab6, src_tab7 = st.tabs(["PEXELS", "UNSPLASH", "Art Chicago", "The Met", "Pexels Video", "Pixabay Video", "Coverr Video"])
+        src_tab1, src_tab2, src_tab3, src_tab4, src_tab5, src_tab6, src_tab7, src_tab8 = st.tabs(
+            [
+                "PEXELS",
+                "UNSPLASH",
+                "Art Chicago",
+                "The Met",
+                "Pexels Video",
+                "Pixabay Video",
+                "Coverr Video",
+                "Google Arts",
+            ]
+        )
 
         with src_tab1:
             pexels_query = st.text_input(
@@ -8549,6 +8692,216 @@ try { inp.blur(); } catch (e3) {}
                                                 )
                     except requests.RequestException as e:
                         st.error(f"Failed to contact Coverr API: {e}")
+
+        with src_tab8:
+            st.markdown(
+                "[Google Arts & Culture](https://artsandculture.google.com/) does not publish an official collection API. "
+                "Use **Open search** below, or configure Programmable Search (Custom Search JSON API) for thumbnails in-app."
+            )
+            google_arts_query = st.text_input(
+                "Search Google Arts & Culture",
+                placeholder="e.g. Rembrandt, Uffizi, ukiyo-e, Van Gogh...",
+                key="google_arts_query",
+            )
+            google_arts_limit = st.slider(
+                "Results (Custom Search returns max 10 per query)",
+                min_value=3,
+                max_value=10,
+                value=8,
+                step=1,
+                key="google_arts_limit",
+            )
+            _ga_term = (google_arts_query or "").strip()
+            if _ga_term:
+                _ga_open = f"https://artsandculture.google.com/search?q={quote(_ga_term)}"
+                st.link_button(
+                    "Open search on artsandculture.google.com →",
+                    _ga_open,
+                    use_container_width=True,
+                    help="Opens Google Arts & Culture in a new tab",
+                )
+
+            _refs_ga_n_sel = len(st.session_state.get("refs_selected_google_arts") or set())
+            if _refs_ga_n_sel > 0:
+                with st.container(border=True):
+                    st.markdown(
+                        '<div style="height:1px;background:linear-gradient(90deg,transparent,rgba(245,245,220,0.4),transparent);'
+                        'margin:0 0 0.65rem;"></div>'
+                        f'<p style="margin:0 0 12px;color:#9E9E8A;font-size:0.74rem;font-family:\'Open Sans\',sans-serif;">'
+                        f'<span style="color:var(--refs-cream, #F5F5DC);font-weight:700;">{_refs_ga_n_sel}</span> '
+                        f"item(s) selected — Storyboard/Assets need a preview image URL from search</p>",
+                        unsafe_allow_html=True,
+                    )
+                    col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 1], gap="small")
+                    with col_btn1:
+                        if st.button(
+                            "STORYBOARD",
+                            key="refs_bar_storyboard_btn_google_arts",
+                            use_container_width=True,
+                        ):
+                            _a, _dup, _fail = _refs_send_selected_to_storyboard()
+                            _parts = []
+                            if _a:
+                                _parts.append(f"Added {_a} image(s) to Storyboard")
+                            if _dup:
+                                _parts.append(f"{_dup} duplicate(s) skipped")
+                            if _fail:
+                                _parts.append(f"{_fail} failed (need image preview — enable Custom Search)")
+                            st.toast(". ".join(_parts) if _parts else "Nothing added.")
+                            st.rerun()
+                    with col_btn2:
+                        if st.button(
+                            "ASSET",
+                            key="refs_bar_asset_btn_google_arts",
+                            use_container_width=True,
+                        ):
+                            _sv, _fl = _refs_send_selected_to_assets()
+                            if _sv:
+                                st.toast(f"Saved {_sv} image(s) to Assets" + (f" ({_fl} failed)" if _fl else ""))
+                            elif _fl:
+                                st.toast(f"Could not save ({_fl} failed).")
+                            else:
+                                st.toast("Nothing saved.")
+                            st.rerun()
+                    with col_btn3:
+                        if st.button(
+                            "CLEAR",
+                            key="refs_google_arts_clear_sel",
+                            use_container_width=True,
+                            disabled=(_refs_ga_n_sel == 0),
+                        ):
+                            st.session_state.refs_selected_google_arts = set()
+                            if "selected_images" in st.session_state:
+                                for _k in list(st.session_state.selected_images.keys()):
+                                    if str(_k).startswith("google_arts:"):
+                                        del st.session_state.selected_images[_k]
+                            st.rerun()
+
+            _cse_key = os.getenv("GOOGLE_CUSTOM_SEARCH_API_KEY")
+            _cse_cx = os.getenv("GOOGLE_ARTS_CSE_CX")
+            if _ga_term and _cse_key and _cse_cx:
+                try:
+                    _cr = requests.get(
+                        "https://www.googleapis.com/customsearch/v1",
+                        params={
+                            "key": _cse_key,
+                            "cx": _cse_cx,
+                            "q": _ga_term,
+                            "num": min(10, int(google_arts_limit)),
+                        },
+                        timeout=25,
+                    )
+                    if _cr.status_code != 200:
+                        try:
+                            _em = (_cr.json() or {}).get("error", {}).get("message", _cr.text[:200])
+                        except Exception:
+                            _em = _cr.text[:200]
+                        st.error(f"Custom Search API error ({_cr.status_code}): {_em}")
+                    else:
+                        _cj = _cr.json() or {}
+                        _items = _cj.get("items") or []
+                        _ga_by_id = {}
+                        for it in _items:
+                            _link = (it.get("link") or "").strip()
+                            if "artsandculture.google.com" not in _link:
+                                continue
+                            _sid = hashlib.md5(_link.encode("utf-8")).hexdigest()[:16]
+                            _thumb = (_refs_google_arts_thumb_from_cse_item(it) or "").strip()
+                            _ga_by_id[_sid] = {
+                                "id": _sid,
+                                "title": (it.get("title") or "Result")[:220],
+                                "snippet": (it.get("snippet") or "")[:400],
+                                "page_url": _link,
+                                "image_url": _thumb,
+                            }
+
+                        st.session_state["_refs_google_arts_by_id"] = _ga_by_id
+
+                        if st.session_state.get("_refs_google_arts_query_sig") != _ga_term:
+                            st.session_state._refs_google_arts_query_sig = _ga_term
+                            st.session_state.refs_selected_google_arts = set()
+                            if "selected_images" in st.session_state:
+                                for _k in list(st.session_state.selected_images.keys()):
+                                    if str(_k).startswith("google_arts:"):
+                                        del st.session_state.selected_images[_k]
+
+                        def _refs_ga_bridge_cb():
+                            _refs_sel_bridge_on_change("refs_google_arts_sel_bridge", "google_arts")
+
+                        st.text_input(
+                            "refs_google_arts_sel_bridge",
+                            key="refs_google_arts_sel_bridge",
+                            on_change=_refs_ga_bridge_cb,
+                            label_visibility="collapsed",
+                        )
+
+                        _ga_gal_exp = (
+                            '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" '
+                            'xmlns="http://www.w3.org/2000/svg">'
+                            '<path d="M1 4.5V1H4.5M7.5 1H11V4.5M11 7.5V11H7.5M4.5 11H1V7.5" '
+                            'stroke="currentColor" stroke-width="1.6" stroke-linecap="round" '
+                            'stroke-linejoin="round"/></svg>'
+                        )
+                        _ga_pl = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+                        _ga_cards_html = ""
+                        _ga_n = 0
+                        for _sid, _obj in _ga_by_id.items():
+                            _img_u = (_obj.get("image_url") or "").strip()
+                            _page_u = (_obj.get("page_url") or "").strip()
+                            _title = _obj.get("title") or "Result"
+                            _cap_line = _html_stdlib.escape(f"{_title}"[:140])
+                            _is_sel = _sid in st.session_state.refs_selected_google_arts
+                            _wrap_sel = " ref-stock-selected" if _is_sel else ""
+                            _wrap_nd = " ref-stock-no-dims"
+                            _sel_chk = '<div class="ref-stock-sel-check">&#10003;</div>' if _is_sel else ""
+                            _src = _img_u if _img_u else _ga_pl
+                            _safe_src = str(_src).replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;")
+                            _zoom_attr = str(_page_u).replace("&", "&amp;").replace('"', "&quot;").replace("'", "&#39;")
+                            _safe_id_js = str(_sid).replace("\\", "\\\\").replace("'", "\\'")
+                            _ga_n += 1
+                            _ga_cards_html += f"""<div class="gal-card ref-stock-card" onclick="refsGaSel('{_safe_id_js}')">
+<div class="gal-badge">{_ga_n}</div>
+<div class="ref-stock-img-wrap{_wrap_sel}{_wrap_nd}">
+<div class="ref-stock-ph" aria-hidden="true"></div>
+<div class="gal-expand" data-zoom="{_zoom_attr}" onclick="event.stopPropagation();event.preventDefault();var z=this.getAttribute('data-zoom');if(z)window.open(z,'_blank','noopener,noreferrer');" title="Open on Arts & Culture">{_ga_gal_exp}</div>
+{_sel_chk}
+<img class="ref-stock-img" src="{_safe_src}" alt="" loading="lazy" decoding="async" draggable="false"/>
+</div>
+<div class="gal-caption">{_cap_line}</div>
+</div>"""
+
+                        if not _ga_cards_html:
+                            st.warning("No Arts & Culture pages in results (check CSE is limited to artsandculture.google.com).")
+                        else:
+                            _ga_h = min(5600, 360 + _ga_n * 280)
+                            _ga_html = (
+                                _REFS_STOCK_IFRAME_CSS
+                                + f'<div class="ref-stock-masonry">{_ga_cards_html}</div>'
+                                + """
+<script>
+function refsGaSel(id) {
+var inp = window.parent.document.querySelector('input[aria-label="refs_google_arts_sel_bridge"]');
+if (!inp) return;
+var ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+var payload = String(id) + '|' + Date.now();
+ns.call(inp, payload);
+inp.dispatchEvent(new Event('input', {bubbles:true}));
+inp.dispatchEvent(new Event('change', {bubbles:true}));
+try { inp.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: payload })); } catch (e) {}
+try { inp.focus({ preventScroll: true }); } catch (e2) {}
+try { inp.blur(); } catch (e3) {}
+}
+</script>"""
+                            )
+                            components.html(_ga_html, height=_ga_h, scrolling=True)
+                except requests.RequestException as e:
+                    st.error(f"Failed to contact Custom Search API: {e}")
+            elif _ga_term and not (_cse_key and _cse_cx):
+                st.info(
+                    "Optional: set **GOOGLE_CUSTOM_SEARCH_API_KEY** and **GOOGLE_ARTS_CSE_CX** "
+                    "(Programmable Search Engine restricted to `artsandculture.google.com`) to show selectable previews here. "
+                    "See [Custom Search JSON API](https://developers.google.com/custom-search/v1/overview)."
+                )
 
     elif st.session_state.get("active_page") == "storyboard":
         if "sbi_nav" not in st.session_state:

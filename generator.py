@@ -64,6 +64,10 @@ def _session_for_ark():
 SEEDANCE_1_5_MODEL_ID = "seedance-1-5-pro-251215"  # ByteDance-Seedance-1.5-pro
 # Seedance 2.0: multimodal (text, images, videos, audio), 4–15s, 480P–2K, Video Extension/Editing
 SEEDANCE_2_0_MODEL_ID = os.getenv("SEEDANCE_2_MODEL_ID", "seedance-2-0-pro-260210")  # Update from ModelArk console when available
+# Atlas Cloud (proxy for Seedance 2.0 when BytePlus direct is not available)
+ATLAS_API_KEY = os.getenv("ATLAS_API_KEY", "")
+ATLAS_TASK_URL = "https://api.atlascloud.ai/api/v1/model/sedeo/tasks"
+SEEDANCE_2_PROVIDER = os.getenv("SEEDANCE_2_PROVIDER", "byteplus")  # "atlas" or "byteplus"
 SEEDANCE_2_MODEL_ID = SEEDANCE_2_0_MODEL_ID  # Alias for backward compat
 SEEDREAM_4_5_MODEL_ID = "seedream-4-5-251128"     # ByteDance-Seedream-4.5
 # ByteDance-Seedream-5.0-lite (260128): text, single/multi-image, image sets.
@@ -350,10 +354,168 @@ def _log_generation_cost(model, duration, resolution, service_tier,
         writer.writerow(row)
 
 
+def _generate_video_atlas(prompt_text, scene_description, images=[], videos=[], audios=[],
+                          seed="-1", resolution="720p", aspect_ratio="16:9", duration=5,
+                          generate_audio=True, is_draft=False, model_variant="sedeo-2.0",
+                          image_usage="auto", **kwargs):
+    """Generate video via Atlas Cloud (Sedeo 2.0 = Seedance 2.0 proxy)."""
+    if not ATLAS_API_KEY:
+        return "ATLAS_API_KEY missing. Add it to environment variables."
+    headers = {"Authorization": f"Bearer {ATLAS_API_KEY}", "Content-Type": "application/json"}
+
+    clean_prompt = re.sub(r'\s*--\w+\s+\S+', '', (prompt_text or "").strip()).strip() or prompt_text or ""
+    content_list = [{"type": "text", "text": clean_prompt}]
+
+    # Images with roles
+    image_files = (images or [])[:9]
+    is_first_last = (image_usage == "first_last_frame")
+    if is_first_last:
+        image_files = (images or [])[:2]
+
+    for i, file in enumerate(image_files):
+        try:
+            b64 = base64.b64encode(file.getvalue()).decode("utf-8")
+            mime = (file.type or "image/jpeg").split(";")[0].strip()
+            if is_first_last:
+                role = "first_frame" if i == 0 else "last_frame"
+            elif i == 0 and image_usage in ("first_frame", "auto") and len(image_files) == 1:
+                role = "first_frame"
+            else:
+                role = "reference_image"
+            content_list.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{b64}"},
+                "role": role,
+            })
+        except Exception:
+            pass
+
+    # Videos with role
+    for file in (videos or [])[:3]:
+        try:
+            b64 = base64.b64encode(file.getvalue()).decode("utf-8")
+            mime = (file.type or "video/mp4").split(";")[0].strip()
+            content_list.append({
+                "type": "video_url",
+                "video_url": {"url": f"data:{mime};base64,{b64}"},
+                "role": "reference_video",
+            })
+        except Exception:
+            pass
+
+    # Audio with role
+    if generate_audio:
+        for file in (audios or [])[:3]:
+            try:
+                b64 = base64.b64encode(file.getvalue()).decode("utf-8")
+                mime = (file.type or "audio/wav").split(";")[0].strip()
+                content_list.append({
+                    "type": "audio_url",
+                    "audio_url": {"url": f"data:{mime};base64,{b64}"},
+                    "role": "reference_audio",
+                })
+            except Exception:
+                pass
+
+    try:
+        seed_int = int(seed) if seed and str(seed).strip() != "-1" else None
+    except (ValueError, TypeError):
+        seed_int = None
+
+    try:
+        duration_int = int(duration)
+    except (ValueError, TypeError):
+        duration_int = 5
+    max_dur = 12 if "fast" in model_variant else 15
+    duration_int = max(4, min(max_dur, duration_int))
+
+    atlas_model = f"atlascloud/{model_variant}"
+    payload = {
+        "model": atlas_model,
+        "content": content_list,
+        "resolution": "480p" if is_draft else resolution,
+        "ratio": aspect_ratio,
+        "duration": duration_int,
+        "generate_audio": bool(generate_audio),
+        "watermark": False,
+    }
+    if seed_int is not None:
+        payload["seed"] = seed_int
+
+    try:
+        _session = _session_for_ark()
+        response = _session.post(ATLAS_TASK_URL, headers=headers, json=payload, timeout=30, verify=True)
+        if not response.ok:
+            try:
+                err_body = response.json()
+                err_msg = err_body.get("message") or str(err_body)
+            except Exception:
+                err_msg = response.text[:500]
+            return f"Atlas API Error ({response.status_code}): {err_msg}"
+        res_json = response.json()
+        task_data = res_json.get("data") or res_json
+        task_id = task_data.get("id")
+        if not task_id:
+            return f"Atlas API did not return task id: {res_json}"
+
+        # Polling loop
+        poll_url = f"{ATLAS_TASK_URL}/{task_id}"
+        for _ in range(180):  # 15 min max
+            time.sleep(5)
+            s_res = _session.get(poll_url, headers=headers, timeout=10, verify=True)
+            s_json = s_res.json()
+            s_data = s_json.get("data") or s_json
+            status = s_data.get("status", "")
+
+            if status == "completed":
+                outputs = s_data.get("outputs") or []
+                video_url = outputs[0] if outputs else None
+                if video_url:
+                    saved_paths = save_video_with_metadata(
+                        video_url=video_url,
+                        prompt_text=prompt_text,
+                        scene_description=scene_description,
+                        resolution=resolution,
+                        aspect_ratio=aspect_ratio,
+                        duration=duration_int,
+                        seed=seed,
+                        generate_audio=generate_audio,
+                        is_draft=is_draft,
+                        is_offline=False,
+                        model_id=atlas_model,
+                    )
+                    return {
+                        "video": video_url,
+                        "video_path": saved_paths.get("video_path"),
+                        "last_frame_path": saved_paths.get("last_frame_path"),
+                        "info_file_path": saved_paths.get("info_file_path"),
+                    }
+                return {"video": video_url}
+            elif status in ("failed", "timeout"):
+                err = s_data.get("error") or s_data.get("message") or "Unknown error"
+                return f"Atlas generation failed: {err}"
+
+        return "Atlas generation timeout (15 min)."
+    except Exception as e:
+        return f"Atlas request failed: {e}"
+
+
 def generate_video(prompt_text, scene_description, images=[], videos=[], audios=[], 
                    seed="-1", resolution="1080p", aspect_ratio="16:9", duration=8, 
                    generate_audio=False, audio_details={}, is_draft=False, is_offline=False, 
                    model_id=None, shots_data=None, camera_fixed=None, **kwargs):
+    # Route Seedance 2.0 to Atlas Cloud when configured
+    _is_s2 = model_id and ("2.0" in str(model_id) or "2-0" in str(model_id) or "2_0" in str(model_id))
+    if _is_s2 and SEEDANCE_2_PROVIDER == "atlas" and ATLAS_API_KEY:
+        _variant = "sedeo-2.0-fast" if is_draft else "sedeo-2.0"
+        return _generate_video_atlas(
+            prompt_text=prompt_text, scene_description=scene_description,
+            images=images, videos=videos, audios=audios,
+            seed=seed, resolution=resolution, aspect_ratio=aspect_ratio,
+            duration=duration, generate_audio=generate_audio,
+            is_draft=is_draft, model_variant=_variant,
+            image_usage=kwargs.get("image_usage", "auto"),
+        )
     if not API_KEY: return "API_KEY_ERROR"
     headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
     
