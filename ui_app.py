@@ -1050,6 +1050,28 @@ ASSETS_DIR = os.path.join(_PERSIST_DIR, "assets")
 ASSETS_CATALOG_FILE = os.path.join(_DB_DIR, "assets_catalog.json")
 
 
+class CachedUploadedFile:
+    """Mimics Streamlit UploadedFile from cached bytes, survives page navigation."""
+    def __init__(self, name, data, mime_type):
+        self.name = name
+        self.type = mime_type
+        self._data = data
+        self.size = len(data)
+
+    def getvalue(self):
+        return self._data
+
+    def read(self):
+        return self._data
+
+
+def _materialize_multi_file_upload(raw):
+    """Copy Streamlit multi-file uploader output to a list exactly once (avoids iterator / double-read loss)."""
+    if raw is None:
+        return []
+    return list(raw)
+
+
 class AssetFile:
     """Wraps a file on disk to mimic Streamlit's UploadedFile interface."""
     def __init__(self, path, name, mime_type):
@@ -1329,6 +1351,7 @@ def toggle_refs_selection(image_id, source="pexels"):
         "art_chicago": "refs_selected_art_chicago",
         "met": "refs_selected_met",
         "google_arts": "refs_selected_google_arts",
+        "wiki": "refs_selected_wiki",
     }
     key = _key_map.get(source, "refs_selected_unsplash")
 
@@ -1477,6 +1500,35 @@ def _refs_resolve_selected_image_meta(image_id, source="pexels"):
                 "original_width": None,
                 "original_height": None,
             }
+        if source == "wiki":
+            by_w = st.session_state.get("_refs_wiki_by_id") or {}
+            rec = by_w.get(sid)
+            if not rec:
+                return None
+            img_url = rec.get("image_url") or ""
+            full_url = rec.get("full_url") or img_url
+            url = full_url or img_url
+            if not url:
+                return None
+            title = rec.get("title") or "Wikimedia"
+            artist = rec.get("artist_display") or "Unknown"
+            cap = f"{title} — {artist}"[:140]
+            return {
+                "source": "wiki",
+                "id": sid,
+                "url": url,
+                "caption": cap,
+                "provenance": {
+                    "vendor": "wikimedia",
+                    "id": sid,
+                    "title": title,
+                    "artist_display": artist,
+                    "image_url": img_url,
+                    "full_url": full_url,
+                },
+                "original_width": rec.get("original_width"),
+                "original_height": rec.get("original_height"),
+            }
     except Exception:
         # Never break selection UI if metadata resolution fails.
         return None
@@ -1617,8 +1669,9 @@ def _refs_send_selected_to_storyboard():
     u_ids = set(st.session_state.get("refs_selected_unsplash") or set())
     a_ids = set(st.session_state.get("refs_selected_art_chicago") or set())
     m_ids = set(st.session_state.get("refs_selected_met") or set())
+    w_ids = set(st.session_state.get("refs_selected_wiki") or set())
     g_ids = set(st.session_state.get("refs_selected_google_arts") or set())
-    if not p_ids and not u_ids and not a_ids and not m_ids and not g_ids:
+    if not p_ids and not u_ids and not a_ids and not m_ids and not w_ids and not g_ids:
         return 0, 0, 0
 
     if st.session_state.sb_mode not in ("new", "loaded"):
@@ -1632,6 +1685,7 @@ def _refs_send_selected_to_storyboard():
     by_u = st.session_state.get("_refs_unsplash_by_id") or {}
     by_a = st.session_state.get("_refs_art_chicago_by_id") or {}
     by_m = st.session_state.get("_refs_met_by_id") or {}
+    by_w = st.session_state.get("_refs_wiki_by_id") or {}
     by_g = st.session_state.get("_refs_google_arts_by_id") or {}
     added = 0
     skipped_dup = 0
@@ -1817,6 +1871,53 @@ def _refs_send_selected_to_storyboard():
         existing_urls.add(url)
         added += 1
 
+    for sid in _sort_ref_ids(w_ids):
+        rec = by_w.get(str(sid))
+        if not rec:
+            failed += 1
+            continue
+        url = rec.get("full_url") or rec.get("image_url")
+        if not url:
+            failed += 1
+            continue
+        if url in existing_urls:
+            skipped_dup += 1
+            continue
+        path = _refs_download_url_to_downloads(url, f"wiki_{sid}.jpg")
+        if not path:
+            failed += 1
+            continue
+        if path in existing_paths:
+            skipped_dup += 1
+            continue
+        title = rec.get("title") or "Wikimedia"
+        artist = rec.get("artist_display") or "Unknown"
+        cap = f"{title} — {artist}"[:120]
+        prov = {
+            "vendor": "wikimedia",
+            "api_asset_id": str(sid),
+            "high_res_url": url,
+            "title": title,
+            "artist_display": artist,
+        }
+        item = {
+            "image_path": path,
+            "url": url,
+            "src": url,
+            "caption": cap,
+            "prompt": "",
+            "specs": {},
+            "project_id": st.session_state.get("active_project_id"),
+            "created_at": datetime.now().isoformat(),
+            "reference_provenance": prov,
+            "original_width": rec.get("original_width"),
+            "original_height": rec.get("original_height"),
+        }
+        st.session_state.sb_active_images.append(item)
+        existing_paths.add(path)
+        existing_urls.add(url)
+        added += 1
+
     for sid in _sort_ref_ids(g_ids):
         rec = by_g.get(str(sid))
         if not rec:
@@ -1868,6 +1969,7 @@ def _refs_send_selected_to_storyboard():
     st.session_state.refs_selected_unsplash = set()
     st.session_state.refs_selected_art_chicago = set()
     st.session_state.refs_selected_met = set()
+    st.session_state.refs_selected_wiki = set()
     st.session_state.refs_selected_google_arts = set()
     st.session_state.selected_images = {}
     _autosave_storyboard_snapshot()
@@ -1880,14 +1982,16 @@ def _refs_send_selected_to_assets():
     u_ids = set(st.session_state.get("refs_selected_unsplash") or set())
     a_ids = set(st.session_state.get("refs_selected_art_chicago") or set())
     m_ids = set(st.session_state.get("refs_selected_met") or set())
+    w_ids = set(st.session_state.get("refs_selected_wiki") or set())
     g_ids = set(st.session_state.get("refs_selected_google_arts") or set())
-    if not p_ids and not u_ids and not a_ids and not m_ids and not g_ids:
+    if not p_ids and not u_ids and not a_ids and not m_ids and not w_ids and not g_ids:
         return 0, 0
 
     by_p = st.session_state.get("_refs_pexels_by_id") or {}
     by_u = st.session_state.get("_refs_unsplash_by_id") or {}
     by_a = st.session_state.get("_refs_art_chicago_by_id") or {}
     by_m = st.session_state.get("_refs_met_by_id") or {}
+    by_w = st.session_state.get("_refs_wiki_by_id") or {}
     by_g = st.session_state.get("_refs_google_arts_by_id") or {}
     saved = 0
     failed = 0
@@ -2007,6 +2111,29 @@ def _refs_send_selected_to_assets():
         else:
             failed += 1
 
+    for sid in _sort_ref_ids(w_ids):
+        rec = by_w.get(str(sid))
+        if not rec:
+            failed += 1
+            continue
+        url = rec.get("full_url") or rec.get("image_url")
+        if not url:
+            failed += 1
+            continue
+        path = _refs_download_url_to_downloads(url, f"wiki_{sid}.jpg")
+        if not path:
+            failed += 1
+            continue
+        result = add_to_assets(
+            source_path=path,
+            original_name=f"wiki_{sid}.jpg",
+            provenance={"source": "wikimedia", "id": str(sid), "title": rec.get("title", ""), "artist": rec.get("artist_display", ""), "url": url},
+        )
+        if result:
+            saved += 1
+        else:
+            failed += 1
+
     for sid in _sort_ref_ids(g_ids):
         rec = by_g.get(str(sid))
         if not rec:
@@ -2041,9 +2168,186 @@ def _refs_send_selected_to_assets():
     st.session_state.refs_selected_unsplash = set()
     st.session_state.refs_selected_art_chicago = set()
     st.session_state.refs_selected_met = set()
+    st.session_state.refs_selected_wiki = set()
     st.session_state.refs_selected_google_arts = set()
     st.session_state.selected_images = {}
     return saved, failed
+
+
+_CONSOLE_FILE_AND_ASSET_PICKER_KEYS = frozenset({
+    "s2_first_frame", "s2_assets_first_frame", "s2_last_frame", "s2_assets_last_frame",
+    "s2_first_only", "s2_assets_first_only", "s2_images", "s2_assets_images",
+    "s2_videos", "s2_assets_videos", "s2_audio", "s2_assets_audio",
+    "s15_first_frame", "s15_assets_first_frame", "s15_last_frame", "s15_assets_last_frame",
+    "s15_images_single", "s15_assets_images",
+    "sd_refs_upload", "sd_assets_refs",
+})
+
+
+def _console_session_state_assign_forbidden(k: str) -> bool:
+    """Streamlit forbids assigning session_state for st.button / file_uploader / camera_input keys."""
+    if not k:
+        return True
+    if k in _CONSOLE_FILE_AND_ASSET_PICKER_KEYS:
+        return True
+    lk = k.lower()
+    if "btn" in lk:
+        return True
+    if "add_c_" in k:
+        return True
+    if "add_motions_" in k:
+        return True
+    if "_production_opt" in k:
+        return True
+    if "preview_prompt_btn" in k or "preview_btn" in lk:
+        return True
+    if "_analyze_" in k:
+        return True
+    if "uploader" in lk or "upload" in lk:
+        return True
+    return False
+
+
+def _clear_console_prompts_for_project_change():
+    """When switching projects, clear prompts/results only (not technical parameters)."""
+    for k in (
+        "s2_opt_prompt", "s2_raw_prompt", "s15_opt_prompt", "s15_raw_prompt",
+        "sd_opt_prompt", "sd_raw_prompt", "json_preview", "_json_dict",
+        "s2_last_result", "s15_last_result", "sd_last_result", "show_generate_button",
+        "_cached_s2_first_frame", "_cached_s2_last_frame", "_cached_s2_first_only",
+        "_cached_s2_images", "_cached_s2_videos", "_cached_s2_audio",
+        "_cached_s15_first_frame", "_cached_s15_last_frame", "_cached_s15_images",
+        "_cached_sd_refs",
+        "_s2_img_saved_names", "_s2_vid_saved_names", "_s2_aud_saved_names",
+        "_s15_img_saved_names", "_sd_ref_saved_names",
+        "_console_ref_tag_map",
+    ):
+        st.session_state.pop(k, None)
+
+
+def _console_snapshot_key_list():
+    """Keys to snapshot/restore across page navigation (Streamlit drops undisplayed widget state)."""
+    keys = set()
+
+    keys.update([
+        "model_selector",
+        "action_desc_s2", "s15_action_desc", "sd_prompt_input",
+        "s2_entry_point", "s2_workflow", "s2_workflow_fl", "s2_workflow_ff",
+        "s2_image_usage",
+        "s15_workflow",
+        "sd_style_select",
+    ])
+
+    # File upload / asset-picker keys: do not del or assign via session_state (Streamlit restriction).
+
+    keys.update([
+        "s2_raw_prompt", "s2_opt_prompt", "s2_last_result",
+        "s15_raw_prompt", "s15_opt_prompt", "s15_last_result",
+        "sd_raw_prompt", "sd_opt_prompt", "sd_last_result",
+        "json_preview", "_json_dict",
+        "show_generate_button", "s15_show_generate",
+        "_do_preview_s2", "_do_preview_s15", "_do_preview_sd",
+        "_do_generate_s2", "_do_generate_s15", "_do_generate_sd",
+        "_preview_feedback",
+        "canvas_prompt_editor", "canvas_json_viewer",
+        "vision_context", "s15_vision_context",
+    ])
+
+    keys.update([
+        "video_resolution", "video_aspect_ratio", "common_duration",
+        "gen_mode_selector",
+        "s15_resolution", "s15_aspect_ratio", "s15_duration", "s15_gen_mode",
+        "sd_resolution", "sd_ar_select",
+        "common_temperature", "common_num_variations", "last_num_variations",
+        "s15_temperature", "s15_num_variations",
+        "sd_optimize", "enforce_stability",
+        "enable_audio", "s15_enable_audio", "s2_audio_output",
+        "v_lang", "v_emo", "v_timbre", "v_pace",
+        "s2_dialogue", "s2_sfx",
+        "s15_v_lang", "s15_v_emo", "s15_v_timbre", "s15_v_pace",
+        "s15_dialogue", "s15_sfx",
+    ])
+    for i in range(5):
+        keys.update([f"seed_input_{i}", f"s15_seed_{i}"])
+
+    keys.update([
+        "sd_shot_type", "sd_mood", "sd_period",
+        "sd_camera", "sd_lenses", "sd_film_stock", "sd_sensor",
+        "sd_light_src", "sd_light_dir", "sd_light_type",
+    ])
+
+    keys.update(["en_s2", "en_s3", "s15_en_s2", "s15_en_s3"])
+
+    for prefix in ["s", "s15_"]:
+        for shot_n in range(1, 4):
+            k = f"{prefix}{shot_n}"
+            keys.update([
+                f"{k}_assets",
+                f"{k}_shot_type", f"{k}_style", f"{k}_mood", f"{k}_period",
+                f"{k}_camera", f"{k}_lenses", f"{k}_film_stock", f"{k}_sensor",
+                f"{k}_light_src", f"{k}_light_dir", f"{k}_light",
+                f"{k}_tb", f"{k}_tc", f"{k}_ts", f"{k}_tt", f"{k}_tbo", f"{k}_tsh",
+                f"{k}_tv", f"{k}_tca", f"{k}_tg", f"{k}_tso", f"{k}_tmb",
+                f"{k}_vfx_a", f"{k}_vfx_e",
+                f"{k}_m1_type", f"{k}_m1_pace", f"{k}_m1_s", f"{k}_m1_e",
+                f"{k}_m1_ca", f"{k}_m1_so",
+                f"{k}_m2_type", f"{k}_m2_pace", f"{k}_m2_s", f"{k}_m2_e",
+                f"{k}_m2_ca", f"{k}_m2_so",
+                f"show_secondary_{k}",
+                f"color_count_{k}",
+            ])
+            for ci in range(3):
+                keys.update([f"{k}_c_hex_{ci}", f"{k}_c_tar_{ci}"])
+
+    return list(keys)
+
+
+_CONSOLE_SNAPSHOT_SKIP = frozenset({
+    "s2_first_frame", "s2_assets_first_frame",
+    "s2_last_frame", "s2_assets_last_frame",
+    "s2_first_only", "s2_assets_first_only",
+    "s2_images", "s2_assets_images",
+    "s2_videos", "s2_assets_videos",
+    "s2_audio", "s2_assets_audio",
+    "s15_first_frame", "s15_assets_first_frame",
+    "s15_last_frame", "s15_assets_last_frame",
+    "s15_images_single", "s15_assets_images",
+    "sd_refs_upload", "sd_assets_refs",
+    "show_generate_button", "s15_show_generate",
+    "_do_preview_s2", "_do_preview_s15", "_do_preview_sd",
+    "_do_generate_s2", "_do_generate_s15", "_do_generate_sd",
+    "_preview_feedback",
+    "canvas_prompt_editor", "canvas_json_viewer",
+    "s2_last_result", "s15_last_result", "sd_last_result",
+    "_console_reset_pending",
+    "_console_param_snapshot",
+})
+
+
+def _save_console_param_snapshot():
+    """Persist console params when leaving Console — Streamlit drops undisplayed widget keys."""
+    snap = {}
+    for k in _console_snapshot_key_list():
+        if k in _CONSOLE_SNAPSHOT_SKIP:
+            continue
+        if _console_session_state_assign_forbidden(k):
+            continue
+        if k not in st.session_state:
+            continue
+        snap[k] = st.session_state[k]
+    st.session_state["_console_param_snapshot"] = snap
+
+
+def _restore_console_param_snapshot():
+    """Re-inject params removed while Gallery/Assets/etc. had the Console branch unmounted."""
+    snap = st.session_state.get("_console_param_snapshot")
+    if not isinstance(snap, dict) or not snap:
+        return
+    for sk, sv in snap.items():
+        if _console_session_state_assign_forbidden(sk):
+            continue
+        if sk not in st.session_state:
+            st.session_state[sk] = sv
 
 
 def check_password():
@@ -3319,6 +3623,10 @@ if check_password():
         st.session_state.refs_selected_art_chicago = set()
     if "refs_selected_met" not in st.session_state:
         st.session_state.refs_selected_met = set()
+    if "refs_selected_wiki" not in st.session_state:
+        st.session_state.refs_selected_wiki = set()
+    if "_refs_wiki_by_id" not in st.session_state:
+        st.session_state._refs_wiki_by_id = {}
     if "_refs_met_by_id" not in st.session_state:
         st.session_state._refs_met_by_id = {}
     if "refs_selected_google_arts" not in st.session_state:
@@ -3372,6 +3680,7 @@ if check_password():
         if 'gallery_videos' not in st.session_state: st.session_state.gallery_videos = loaded_videos
         if 'gallery_images' not in st.session_state: st.session_state.gallery_images = loaded_images
     if 'active_page' not in st.session_state: st.session_state.active_page = 'console'
+    _restore_console_param_snapshot()
     if 'model_selector' not in st.session_state: st.session_state.model_selector = 'SEEDANCE 2.0'
     if 'json_preview' not in st.session_state:
         st.session_state.json_preview = None  # None or JSON string
@@ -6586,6 +6895,7 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
                 return
             st.session_state[_proj_pick_key] = ""
             pid = raw.split("|")[0].strip()
+            prev_pid = st.session_state.get("active_project_id")
             pd = load_projects()
             for p in pd.get("projects", []):
                 if p["id"] == pid:
@@ -6593,6 +6903,8 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
                     save_projects(pd)
                     st.session_state.active_project_id = pid
                     st.session_state.active_project_name = p["name"]
+                    if pid != prev_pid:
+                        _clear_console_prompts_for_project_change()
                     return
 
         _col_main, _col_side = st.columns([4, 1], gap="large")
@@ -6630,6 +6942,7 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
                     save_projects(proj_data)
                     st.session_state.active_project_id = new_id
                     st.session_state.active_project_name = name
+                    _clear_console_prompts_for_project_change()
                     st.toast(f"Created & activated: {name}")
                     st.rerun()
 
@@ -6653,6 +6966,7 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
                     save_projects(pd)
                     st.session_state.active_project_id = None
                     st.session_state.active_project_name = "All Projects"
+                    _clear_console_prompts_for_project_change()
                     st.toast("Project deleted.")
                     st.rerun()
 
@@ -6666,6 +6980,8 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
                 pd = load_projects()
                 pd["active_project_id"] = None
                 save_projects(pd)
+                if st.session_state.get("active_project_id") is not None:
+                    _clear_console_prompts_for_project_change()
                 st.session_state.active_project_id = None
                 st.session_state.active_project_name = "All Projects"
                 st.toast("Switched to: All Projects")
@@ -6933,6 +7249,52 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
                 st.toast(f"Removed: {_fn}")
                 st.rerun()
 
+            # Mapping: file name (as in catalog / upload) → @tag for Console references
+            _live_tags = st.session_state.get("_console_ref_tag_map")
+            if isinstance(_live_tags, dict) and _live_tags:
+                _console_tag_map = dict(_live_tags)
+            else:
+                _console_tag_map = {}
+                _cached_imgs = []
+                _s2_multi = list(st.session_state.get("_cached_s2_images") or [])
+                if _s2_multi:
+                    _cached_imgs = _s2_multi
+                else:
+                    _s2ff = st.session_state.get("_cached_s2_first_frame")
+                    _s2lf = st.session_state.get("_cached_s2_last_frame")
+                    if _s2ff or _s2lf:
+                        _cached_imgs = [x for x in (_s2ff, _s2lf) if x]
+                    else:
+                        _s2fo = st.session_state.get("_cached_s2_first_only")
+                        if _s2fo:
+                            _cached_imgs = [_s2fo]
+                        else:
+                            _ff15 = st.session_state.get("_cached_s15_first_frame")
+                            _lf15 = st.session_state.get("_cached_s15_last_frame")
+                            _s15l = list(st.session_state.get("_cached_s15_images") or [])
+                            if _ff15 or _lf15:
+                                _cached_imgs = [x for x in (_ff15, _lf15) if x]
+                            elif _s15l:
+                                _cached_imgs = _s15l
+                _cached_vids = list(st.session_state.get("_cached_s2_videos") or [])
+                _cached_auds = list(st.session_state.get("_cached_s2_audio") or [])
+                for _i, _f in enumerate(_cached_imgs):
+                    _k = getattr(_f, "name", "") or ""
+                    if _k:
+                        _console_tag_map[_k] = f"@Image {_i + 1}"
+                for _i, _f in enumerate(_cached_vids):
+                    _k = getattr(_f, "name", "") or ""
+                    if _k:
+                        _console_tag_map[_k] = f"@Video {_i + 1}"
+                for _i, _f in enumerate(_cached_auds):
+                    _k = getattr(_f, "name", "") or ""
+                    if _k:
+                        _console_tag_map[_k] = f"@Audio {_i + 1}"
+                for _i, _f in enumerate(list(st.session_state.get("_cached_sd_refs") or [])):
+                    _k = getattr(_f, "name", "") or ""
+                    if _k:
+                        _console_tag_map[_k] = f"@Image {_i + 1}"
+
             # ── Grid ──
             GRID_COLS = 4
             for row_start in range(0, len(page_items), GRID_COLS):
@@ -6954,11 +7316,19 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
                         type_labels = {"image": "IMG", "video": "VID", "audio": "AUD"}
                         badge_color = type_colors.get(ftype, "#9E9E8A")
                         badge_label = type_labels.get(ftype, "FILE")
+                        _orig_name = asset.get("original_name") or ""
+                        _at_tag = _console_tag_map.get(_orig_name, "") or _console_tag_map.get(fname, "")
+                        _at_tag_esc = _html_stdlib.escape(_at_tag) if _at_tag else ""
+                        _at_tag_html = (
+                            f'<span style="color:#FFEB3B; font-size:0.6rem; font-weight:700; '
+                            f'font-family:Open Sans,sans-serif; background:rgba(255,235,59,0.12); '
+                            f'padding:1px 5px; border-radius:3px; margin-left:6px;">{_at_tag_esc}</span>'
+                        ) if _at_tag_esc else ""
 
                         st.markdown(
                             f'<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">'
                             f'<span style="color:{badge_color}; font-size:0.65rem; font-weight:700; '
-                            f'font-family:Open Sans,sans-serif; letter-spacing:0.08em;">{badge_label}</span>'
+                            f'font-family:Open Sans,sans-serif; letter-spacing:0.08em;">{badge_label}{_at_tag_html}</span>'
                             f'<span style="color:#7a7a6e; font-size:0.6rem; font-family:Open Sans,sans-serif;">{size_str}</span>'
                             f'</div>',
                             unsafe_allow_html=True,
@@ -7068,7 +7438,7 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
         st.markdown("### REFERENCES")
         st.caption("Reference materials for prompt building in the current project.")
 
-        src_tab1, src_tab2, src_tab3, src_tab4, src_tab5, src_tab6, src_tab7, src_tab8 = st.tabs(
+        src_tab1, src_tab2, src_tab3, src_tab4, src_tab5, src_tab6, src_tab7, src_tab8, src_tab9 = st.tabs(
             [
                 "PEXELS",
                 "UNSPLASH",
@@ -7078,6 +7448,7 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
                 "Pixabay Video",
                 "Coverr Video",
                 "Google Arts",
+                "Wikimedia",
             ]
         )
 
@@ -8903,6 +9274,195 @@ try { inp.blur(); } catch (e3) {}
                     "See [Custom Search JSON API](https://developers.google.com/custom-search/v1/overview)."
                 )
 
+        with src_tab9:
+            wiki_query = st.text_input(
+                "Search Wikimedia Commons",
+                placeholder="Type a keyword (e.g. Renaissance painting, daguerreotype, Art Nouveau...)",
+                key="wiki_query",
+            )
+            wiki_limit = st.slider(
+                "Results",
+                min_value=5,
+                max_value=20,
+                value=12,
+                step=1,
+                key="wiki_limit",
+            )
+
+            _refs_wiki_n_sel = len(st.session_state.get("refs_selected_wiki") or set())
+            if _refs_wiki_n_sel > 0:
+                with st.container(border=True):
+                    st.markdown(
+                        '<div style="height:1px;background:linear-gradient(90deg,transparent,rgba(245,245,220,0.4),transparent);'
+                        'margin:0 0 0.65rem;"></div>'
+                        f'<p style="margin:0 0 12px;color:#9E9E8A;font-size:0.74rem;font-family:\'Open Sans\',sans-serif;">'
+                        f'<span style="color:var(--refs-cream, #F5F5DC);font-weight:700;">{_refs_wiki_n_sel}</span> '
+                        f"image(s) selected — send to workspace</p>",
+                        unsafe_allow_html=True,
+                    )
+                    col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 1], gap="small")
+                    with col_btn1:
+                        if st.button("STORYBOARD", key="refs_bar_storyboard_btn_wiki", use_container_width=True):
+                            _a, _dup, _fail = _refs_send_selected_to_storyboard()
+                            _parts = []
+                            if _a:
+                                _parts.append(f"Added {_a} image(s) to Storyboard")
+                            if _dup:
+                                _parts.append(f"{_dup} duplicate(s) skipped")
+                            if _fail:
+                                _parts.append(f"{_fail} failed")
+                            st.toast(". ".join(_parts) if _parts else "Nothing added.")
+                            st.rerun()
+                    with col_btn2:
+                        if st.button("ASSET", key="refs_bar_asset_btn_wiki", use_container_width=True):
+                            _sv, _fl = _refs_send_selected_to_assets()
+                            if _sv:
+                                st.toast(f"Saved {_sv} image(s) to Assets" + (f" ({_fl} failed)" if _fl else ""))
+                            elif _fl:
+                                st.toast(f"Could not save ({_fl} failed).")
+                            else:
+                                st.toast("Nothing saved.")
+                            st.rerun()
+                    with col_btn3:
+                        if st.button("CLEAR", key="refs_wiki_clear_sel", use_container_width=True, disabled=(_refs_wiki_n_sel == 0)):
+                            st.session_state.refs_selected_wiki = set()
+                            if "selected_images" in st.session_state:
+                                for _k in list(st.session_state.selected_images.keys()):
+                                    if str(_k).startswith("wiki:"):
+                                        del st.session_state.selected_images[_k]
+                            st.rerun()
+
+            if wiki_query and str(wiki_query).strip():
+                _wiki_term = str(wiki_query).strip()
+                try:
+                    resp = requests.get(
+                        "https://commons.wikimedia.org/w/api.php",
+                        headers={"User-Agent": "ArkitectAgent/1.0 (https://console.alessiovalori.com; alessio@alessiovalori.com)"},
+                        params={
+                            "action": "query",
+                            "generator": "search",
+                            "gsrsearch": f"filetype:bitmap {_wiki_term}",
+                            "gsrlimit": str(int(wiki_limit)),
+                            "gsrnamespace": "6",
+                            "prop": "imageinfo",
+                            "iiprop": "url|size|mime|extmetadata",
+                            "iiurlwidth": "800",
+                            "format": "json",
+                        },
+                        timeout=20,
+                    )
+                    if resp.status_code != 200:
+                        st.error(f"Wikimedia API error ({resp.status_code}).")
+                    else:
+                        payload = resp.json() or {}
+                        pages = (payload.get("query") or {}).get("pages") or {}
+
+                        _wiki_by_id = {}
+                        for pid, page in pages.items():
+                            ii = (page.get("imageinfo") or [{}])[0]
+                            thumb_url = ii.get("thumburl") or ""
+                            full_url = ii.get("url") or ""
+                            mime = ii.get("mime") or ""
+                            if not thumb_url or not mime.startswith("image"):
+                                continue
+                            title = (page.get("title") or "").replace("File:", "").rsplit(".", 1)[0]
+                            ext_meta = ii.get("extmetadata") or {}
+                            artist = (ext_meta.get("Artist") or {}).get("value") or "Unknown"
+                            import re as _re_wiki
+                            artist = _re_wiki.sub(r"<[^>]+>", "", artist).strip()[:60]
+                            _wiki_by_id[pid] = {
+                                "id": pid,
+                                "title": title[:80],
+                                "artist_display": artist,
+                                "image_url": thumb_url,
+                                "full_url": full_url,
+                                "original_width": ii.get("width"),
+                                "original_height": ii.get("height"),
+                            }
+
+                        st.session_state["_refs_wiki_by_id"] = _wiki_by_id
+
+                        if st.session_state.get("_refs_wiki_query_sig") != _wiki_term:
+                            st.session_state._refs_wiki_query_sig = _wiki_term
+                            st.session_state.refs_selected_wiki = set()
+                            if "selected_images" in st.session_state:
+                                for _k in list(st.session_state.selected_images.keys()):
+                                    if str(_k).startswith("wiki:"):
+                                        del st.session_state.selected_images[_k]
+
+                        def _refs_wiki_bridge_cb():
+                            _refs_sel_bridge_on_change("refs_wiki_sel_bridge", "wiki")
+
+                        st.text_input(
+                            "refs_wiki_sel_bridge",
+                            key="refs_wiki_sel_bridge",
+                            on_change=_refs_wiki_bridge_cb,
+                            label_visibility="collapsed",
+                        )
+
+                        _wiki_gal_exp = (
+                            '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" '
+                            'xmlns="http://www.w3.org/2000/svg">'
+                            '<path d="M1 4.5V1H4.5M7.5 1H11V4.5M11 7.5V11H7.5M4.5 11H1V7.5" '
+                            'stroke="currentColor" stroke-width="1.6" stroke-linecap="round" '
+                            'stroke-linejoin="round"/></svg>'
+                        )
+
+                        _wiki_cards_html = ""
+                        _wiki_n = 0
+                        for _sid, obj_data in _wiki_by_id.items():
+                            img_url = obj_data.get("image_url", "")
+                            full_url = obj_data.get("full_url", img_url)
+                            title = obj_data.get("title", "Untitled")
+                            artist = obj_data.get("artist_display", "Unknown")
+                            _safe_src = str(img_url).replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;")
+                            _zoom_attr = str(full_url).replace("&", "&amp;").replace('"', "&quot;").replace("'", "&#39;")
+                            _cap_line = _html_stdlib.escape(f"{title} — {artist}"[:140])
+                            _is_sel = _sid in st.session_state.get("refs_selected_wiki", set())
+                            _wrap_sel = " ref-stock-selected" if _is_sel else ""
+                            _wrap_nd = " ref-stock-no-dims"
+                            _sel_chk = '<div class="ref-stock-sel-check">&#10003;</div>' if _is_sel else ""
+
+                            _wiki_n += 1
+                            _wiki_cards_html += f"""<div class="gal-card ref-stock-card" onclick="refsWikiSel('{_sid}')">
+<div class="gal-badge">{_wiki_n}</div>
+<div class="ref-stock-img-wrap{_wrap_sel}{_wrap_nd}">
+<div class="ref-stock-ph" aria-hidden="true"></div>
+<div class="gal-expand" data-zoom="{_zoom_attr}" onclick="event.stopPropagation();event.preventDefault();var z=this.getAttribute('data-zoom');if(z)window.open(z,'_blank','noopener,noreferrer');" title="Open full size">{_wiki_gal_exp}</div>
+{_sel_chk}
+<img class="ref-stock-img" src="{_safe_src}" alt="" loading="lazy" decoding="async" draggable="false"/>
+</div>
+<div class="gal-caption">{_cap_line}</div>
+</div>"""
+
+                        if not _wiki_cards_html:
+                            st.warning("No images found on Wikimedia Commons.")
+                        else:
+                            _wiki_h = min(5600, 360 + _wiki_n * 280)
+                            _wiki_html = (
+                                _REFS_STOCK_IFRAME_CSS
+                                + f'<div class="ref-stock-masonry">{_wiki_cards_html}</div>'
+                                + """
+<script>
+function refsWikiSel(id) {
+var inp = window.parent.document.querySelector('input[aria-label="refs_wiki_sel_bridge"]');
+if (!inp) return;
+var ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+var payload = String(id) + '|' + Date.now();
+ns.call(inp, payload);
+inp.dispatchEvent(new Event('input', {bubbles:true}));
+inp.dispatchEvent(new Event('change', {bubbles:true}));
+try { inp.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: payload })); } catch (e) {}
+try { inp.focus({ preventScroll: true }); } catch (e2) {}
+try { inp.blur(); } catch (e3) {}
+}
+</script>"""
+                            )
+                            components.html(_wiki_html, height=_wiki_h, scrolling=True)
+
+                except requests.RequestException as e:
+                    st.error(f"Failed to contact Wikimedia API: {e}")
+
     elif st.session_state.get("active_page") == "storyboard":
         if "sbi_nav" not in st.session_state:
             st.session_state.sbi_nav = "Storyboard"
@@ -9037,210 +9597,39 @@ try { inp.blur(); } catch (e3) {}
         preview_clicked = False
         json_clicked = False
 
-        def _console_reset_keys():
-            # ONLY console UI keys — do not touch gallery/storyboard/editing/project state
-            keys = set()
-
-            # Core console model/workflow inputs
-            keys.update([
-                "model_selector",
+        if st.session_state.get("_console_reset_pending"):
+            del st.session_state["_console_reset_pending"]
+            _reset_keys = [
                 "action_desc_s2", "s15_action_desc", "sd_prompt_input",
-                "s2_entry_point", "s2_workflow", "s2_workflow_fl", "s2_workflow_ff",
-                "s2_image_usage",
-                "s15_workflow",
-                "sd_style_select",
-            ])
-
-            # Uploaders / asset-pickers (console only)
-            keys.update([
-                "s2_first_frame", "s2_assets_first_frame",
-                "s2_last_frame", "s2_assets_last_frame",
-                "s2_first_only", "s2_assets_first_only",
-                "s2_images", "s2_assets_images",
-                "s2_videos", "s2_assets_videos",
-                "s2_audio", "s2_assets_audio",
-                "s15_first_frame", "s15_assets_first_frame",
-                "s15_last_frame", "s15_assets_last_frame",
-                "s15_images_single", "s15_assets_images",
-                "sd_refs_upload", "sd_assets_refs",
-            ])
-
-            # Preview/generate output state
-            keys.update([
-                "s2_raw_prompt", "s2_opt_prompt", "s2_last_result",
-                "s15_raw_prompt", "s15_opt_prompt", "s15_last_result",
-                "sd_raw_prompt", "sd_opt_prompt", "sd_last_result",
+                "s2_opt_prompt", "s2_raw_prompt", "s15_opt_prompt", "s15_raw_prompt",
+                "sd_opt_prompt", "sd_raw_prompt",
                 "json_preview", "_json_dict",
-                "show_generate_button", "s15_show_generate",
+                "s2_last_result", "s15_last_result", "sd_last_result",
+                "show_generate_button", "_preview_feedback",
                 "_do_preview_s2", "_do_preview_s15", "_do_preview_sd",
                 "_do_generate_s2", "_do_generate_s15", "_do_generate_sd",
-                "_preview_feedback",
-                "canvas_prompt_editor", "canvas_json_viewer",
-                "vision_context", "s15_vision_context",
-            ])
-
-            # Technical, seeds, creativity, audio controls
-            keys.update([
-                "video_resolution", "video_aspect_ratio", "common_duration",
-                "gen_mode_selector",
+                "canvas_prompt_editor",
+                "video_resolution", "video_aspect_ratio", "common_duration", "gen_mode_selector",
                 "s15_resolution", "s15_aspect_ratio", "s15_duration", "s15_gen_mode",
-                "sd_resolution", "sd_ar_select",
-                "common_temperature", "common_num_variations", "last_num_variations",
-                "s15_temperature", "s15_num_variations",
-                "sd_optimize", "enforce_stability",
-                "enable_audio", "s15_enable_audio", "s2_audio_output",
-                "v_lang", "v_emo", "v_timbre", "v_pace",
-                "s2_dialogue", "s2_sfx",
-                "s15_v_lang", "s15_v_emo", "s15_v_timbre", "s15_v_pace",
-                "s15_dialogue", "s15_sfx",
-            ])
-            for i in range(5):
-                keys.update([f"seed_input_{i}", f"s15_seed_{i}"])
-
-            # Seedream style/gear controls in console
-            keys.update([
-                "sd_shot_type", "sd_mood", "sd_period",
-                "sd_camera", "sd_lenses", "sd_film_stock", "sd_sensor",
-                "sd_light_src", "sd_light_dir", "sd_light_type",
-            ])
-
-            # Shot enable toggles
-            keys.update(["en_s2", "en_s3", "s15_en_s2", "s15_en_s3"])
-
-            # Full shot panel keys (actual names from render_shot_panel)
-            for prefix in ["s", "s15_"]:
-                for shot_n in range(1, 4):
-                    k = f"{prefix}{shot_n}"
-                    keys.update([
-                        f"{k}_assets",
-                        f"{k}_shot_type", f"{k}_style", f"{k}_mood", f"{k}_period",
-                        f"{k}_camera", f"{k}_lenses", f"{k}_film_stock", f"{k}_sensor",
-                        f"{k}_light_src", f"{k}_light_dir", f"{k}_light",
-                        f"{k}_tb", f"{k}_tc", f"{k}_ts", f"{k}_tt", f"{k}_tbo", f"{k}_tsh",
-                        f"{k}_tv", f"{k}_tca", f"{k}_tg", f"{k}_tso", f"{k}_tmb",
-                        f"{k}_vfx_a", f"{k}_vfx_e",
-                        f"{k}_m1_type", f"{k}_m1_pace", f"{k}_m1_s", f"{k}_m1_e",
-                        f"{k}_m1_ca", f"{k}_m1_so",
-                        f"{k}_m2_type", f"{k}_m2_pace", f"{k}_m2_s", f"{k}_m2_e",
-                        f"{k}_m2_ca", f"{k}_m2_so",
-                        f"show_secondary_{k}",
-                        f"add_motions_{k}",
-                        f"add_c_btn_{k}",
-                        f"color_count_{k}",
-                    ])
-                    for ci in range(3):
-                        keys.update([f"{k}_c_hex_{ci}", f"{k}_c_tar_{ci}"])
-
-            return list(keys)
-
-        if st.session_state.get("_console_reset_pending"):
-            for _k in _console_reset_keys():
-                if _k in st.session_state:
-                    del st.session_state[_k]
-            # Safety sweep: remove any remaining console-widget keys by prefix.
-            _console_prefixes = (
-                "s1_", "s2_", "s3_", "s15_", "sd_",
-                "common_", "video_",
-                "seed_input_", "s15_seed_",
-                "show_secondary_s", "add_motions_s", "add_c_btn_s", "color_count_s",
-            )
-            _console_exact = {
-                "model_selector", "en_s2", "en_s3",
+                "s2_workflow",
+                "common_temperature", "s15_temperature",
+                "common_num_variations", "s15_num_variations",
                 "enable_audio", "s15_enable_audio",
-                "gen_mode_selector",
-                "v_lang", "v_emo", "v_timbre", "v_pace",
-                "enforce_stability",
-            }
-            for _k in list(st.session_state.keys()):
-                if _k in _console_exact or _k.startswith(_console_prefixes):
-                    del st.session_state[_k]
-
-            # Force explicit console defaults so widgets cannot keep stale frontend selections.
-            _defaults = {
-                "model_selector": "SEEDANCE 2.0",
-                "action_desc_s2": "",
-                "s15_action_desc": "",
-                "sd_prompt_input": "",
-                "s2_entry_point": "First Frame",
-                "s2_workflow_fl": "Standard Generation",
-                "s2_workflow_ff": "Standard Generation",
-                "s2_workflow": "Standard Generation",
-                "s15_workflow": "Text-to-video",
-                "sd_style_select": "None (Raw Prompt)",
-                "video_resolution": "2K",
-                "video_aspect_ratio": "16:9",
-                "common_duration": 15,
-                "gen_mode_selector": "Standard (Online)",
-                "s15_resolution": "1080p",
-                "s15_aspect_ratio": "16:9",
-                "s15_duration": 12,
-                "s15_gen_mode": "Standard (Online)",
-                "sd_resolution": "3K",
-                "sd_ar_select": "Smart",
-                "common_temperature": 0.5,
-                "common_num_variations": 1,
-                "s15_temperature": 0.5,
-                "s15_num_variations": 1,
-                "sd_optimize": "None",
-                "enable_audio": False,
-                "s15_enable_audio": False,
-                "s2_audio_output": False,
-                "en_s2": False,
-                "en_s3": False,
-                "s15_en_s2": False,
-                "s15_en_s3": False,
-                "enforce_stability": False,
-            }
-            for _k, _v in _defaults.items():
-                st.session_state[_k] = _v
-
-            # Default values for all shot panels (s1..s3 and s15_1..s15_3).
-            for _prefix in ["s", "s15_"]:
-                for _n in range(1, 4):
-                    _k = f"{_prefix}{_n}"
-                    st.session_state[f"{_k}_assets"] = ""
-                    st.session_state[f"{_k}_shot_type"] = "Not specified"
-                    st.session_state[f"{_k}_style"] = "Not specified"
-                    st.session_state[f"{_k}_mood"] = "Not specified"
-                    st.session_state[f"{_k}_period"] = "Not specified"
-                    st.session_state[f"{_k}_camera"] = "Not specified"
-                    st.session_state[f"{_k}_lenses"] = "Not specified"
-                    st.session_state[f"{_k}_film_stock"] = "Not specified"
-                    st.session_state[f"{_k}_sensor"] = "Not specified"
-                    st.session_state[f"{_k}_light_src"] = "Not specified"
-                    st.session_state[f"{_k}_light_dir"] = "Not specified"
-                    st.session_state[f"{_k}_light"] = "Not specified"
-                    st.session_state[f"{_k}_tb"] = 5
-                    st.session_state[f"{_k}_tc"] = 5
-                    st.session_state[f"{_k}_ts"] = 5
-                    st.session_state[f"{_k}_tt"] = 5
-                    st.session_state[f"{_k}_tbo"] = 3
-                    st.session_state[f"{_k}_tsh"] = 5
-                    st.session_state[f"{_k}_tv"] = 0
-                    st.session_state[f"{_k}_tca"] = 0
-                    st.session_state[f"{_k}_tg"] = 0
-                    st.session_state[f"{_k}_tso"] = 0
-                    st.session_state[f"{_k}_tmb"] = 5
-                    st.session_state[f"{_k}_vfx_a"] = ""
-                    st.session_state[f"{_k}_vfx_e"] = ""
-                    st.session_state[f"{_k}_m1_type"] = "Not specified"
-                    st.session_state[f"{_k}_m1_pace"] = "Not specified"
-                    st.session_state[f"{_k}_m1_s"] = 0 if _n == 1 else 5
-                    st.session_state[f"{_k}_m1_e"] = 4 if _n == 1 else 10
-                    st.session_state[f"{_k}_m1_ca"] = "Not specified"
-                    st.session_state[f"{_k}_m1_so"] = "Not specified"
-                    st.session_state[f"{_k}_m2_type"] = "Not specified"
-                    st.session_state[f"{_k}_m2_pace"] = "Not specified"
-                    st.session_state[f"{_k}_m2_s"] = 4 if _n == 1 else 10
-                    st.session_state[f"{_k}_m2_e"] = 8 if _n == 1 else 15
-                    st.session_state[f"{_k}_m2_ca"] = "Not specified"
-                    st.session_state[f"{_k}_m2_so"] = "Not specified"
-                    st.session_state[f"show_secondary_{_k}"] = False
-                    st.session_state[f"color_count_{_k}"] = 1
-                    for _ci in range(3):
-                        st.session_state[f"{_k}_c_hex_{_ci}"] = ["#1E90FF", "#FF4500", "#32CD32"][_ci]
-                        st.session_state[f"{_k}_c_tar_{_ci}"] = ""
-            del st.session_state["_console_reset_pending"]
+                "sd_optimize", "sd_resolution", "sd_ar_select",
+                "_cached_s2_images", "_cached_s2_videos", "_cached_s2_audio",
+                "_cached_s15_images", "_cached_sd_refs",
+                "_cached_s2_first_frame", "_cached_s2_last_frame", "_cached_s2_first_only",
+                "_cached_s15_first_frame", "_cached_s15_last_frame",
+                "_s2_img_saved_names", "_s2_vid_saved_names", "_s2_aud_saved_names",
+                "_s15_img_saved_names", "_sd_ref_saved_names",
+                "_console_ref_tag_map",
+            ]
+            for k in _reset_keys:
+                st.session_state.pop(k, None)
+            for i in range(10):
+                st.session_state.pop(f"seed_input_{i}", None)
+                st.session_state.pop(f"s15_seed_{i}", None)
+            _save_console_param_snapshot()
             st.rerun()
 
         left_col, center_col, right_col = st.columns([1, 2, 1], vertical_alignment="top")
@@ -9268,13 +9657,20 @@ try { inp.blur(); } catch (e3) {}
                             'letter-spacing:0.08em; text-transform:uppercase;">First Frame</p>',
                             unsafe_allow_html=True,
                         )
-                        s2_first_frame = st.file_uploader(
+                        _s2_ff_raw = st.file_uploader(
                             "Opening frame (1 image)",
                             type=['png', 'jpg', 'jpeg'],
                             accept_multiple_files=False,
                             key="s2_first_frame",
                             help="PNG, JPG, JPEG",
                         )
+                        if _s2_ff_raw:
+                            st.session_state["_cached_s2_first_frame"] = CachedUploadedFile(
+                                _s2_ff_raw.name, _s2_ff_raw.getvalue(), _s2_ff_raw.type
+                            )
+                        s2_first_frame = _s2_ff_raw if _s2_ff_raw else st.session_state.get("_cached_s2_first_frame")
+                        if not _s2_ff_raw and s2_first_frame:
+                            st.caption(f"Loaded from session: {s2_first_frame.name}")
                         _cat = load_asset_catalog()
                         _active_proj = get_active_project_id()
                         if _active_proj:
@@ -9293,13 +9689,20 @@ try { inp.blur(); } catch (e3) {}
                             'letter-spacing:0.08em; text-transform:uppercase;">Last Frame</p>',
                             unsafe_allow_html=True,
                         )
-                        s2_last_frame = st.file_uploader(
+                        _s2_lf_raw = st.file_uploader(
                             "Closing frame (1 image)",
                             type=['png', 'jpg', 'jpeg'],
                             accept_multiple_files=False,
                             key="s2_last_frame",
                             help="PNG, JPG, JPEG",
                         )
+                        if _s2_lf_raw:
+                            st.session_state["_cached_s2_last_frame"] = CachedUploadedFile(
+                                _s2_lf_raw.name, _s2_lf_raw.getvalue(), _s2_lf_raw.type
+                            )
+                        s2_last_frame = _s2_lf_raw if _s2_lf_raw else st.session_state.get("_cached_s2_last_frame")
+                        if not _s2_lf_raw and s2_last_frame:
+                            st.caption(f"Loaded from session: {s2_last_frame.name}")
                         if _img_assets and not s2_last_frame:
                             _lf_opts = ["(none)"] + [f"{a['name']} ({a['size_str']})" for a in _img_assets]
                             _lf_sel = st.selectbox("Or pick from Assets", _lf_opts,
@@ -9335,13 +9738,20 @@ try { inp.blur(); } catch (e3) {}
                             'letter-spacing:0.08em; text-transform:uppercase;">First Frame</p>',
                             unsafe_allow_html=True,
                         )
-                        s2_first_only = st.file_uploader(
+                        _s2_fo_raw = st.file_uploader(
                             "Opening frame (1 image)",
                             type=['png', 'jpg', 'jpeg'],
                             accept_multiple_files=False,
                             key="s2_first_only",
                             help="PNG, JPG, JPEG",
                         )
+                        if _s2_fo_raw:
+                            st.session_state["_cached_s2_first_only"] = CachedUploadedFile(
+                                _s2_fo_raw.name, _s2_fo_raw.getvalue(), _s2_fo_raw.type
+                            )
+                        s2_first_only = _s2_fo_raw if _s2_fo_raw else st.session_state.get("_cached_s2_first_only")
+                        if not _s2_fo_raw and s2_first_only:
+                            st.caption(f"Loaded from session: {s2_first_only.name}")
                         _cat = load_asset_catalog()
                         _active_proj = get_active_project_id()
                         if _active_proj:
@@ -9370,13 +9780,28 @@ try { inp.blur(); } catch (e3) {}
                             'margin:0.75rem 0 0.25rem; text-transform:uppercase;">References</p>',
                             unsafe_allow_html=True,
                         )
-                        s2_images = st.file_uploader(
+                        _s2_img_raw = st.file_uploader(
                             "Images (Max 9)",
                             type=['png', 'jpg', 'jpeg'],
                             accept_multiple_files=True,
                             key="s2_images",
                             help="PNG, JPG, JPEG",
                         )
+                        _s2_img_list = _materialize_multi_file_upload(_s2_img_raw)
+                        if _s2_img_list:
+                            st.session_state["_cached_s2_images"] = [
+                                CachedUploadedFile(f.name, f.getvalue(), f.type) for f in _s2_img_list
+                            ]
+                            if "_s2_img_saved_names" not in st.session_state:
+                                st.session_state["_s2_img_saved_names"] = set()
+                            for f in _s2_img_list:
+                                if f.name not in st.session_state["_s2_img_saved_names"]:
+                                    _result = add_to_assets(uploaded_file=f)
+                                    if _result:
+                                        st.session_state["_s2_img_saved_names"].add(f.name)
+                        s2_images = _s2_img_list if _s2_img_list else list(st.session_state.get("_cached_s2_images") or [])
+                        if not _s2_img_list and s2_images:
+                            st.caption(f"Loaded from session: {', '.join(f.name for f in s2_images)}")
                         # From Assets — images
                         _cat = load_asset_catalog()
                         _active_proj = get_active_project_id()
@@ -9399,13 +9824,28 @@ try { inp.blur(); } catch (e3) {}
                                 if _a and os.path.exists(_a["path"]):
                                     _img_asset_files.append(AssetFile(_a["path"], _a["name"], _a["mime"]))
                             s2_images = list(s2_images or []) + _img_asset_files
-                        s2_videos = st.file_uploader(
+                        _s2_vid_raw = st.file_uploader(
                             "Videos (Max 3)",
                             type=['mp4', 'mov', 'mpeg4'],
                             accept_multiple_files=True,
                             key="s2_videos",
                             help="MP4, MOV, MPEG4",
                         )
+                        _s2_vid_list = _materialize_multi_file_upload(_s2_vid_raw)
+                        if _s2_vid_list:
+                            st.session_state["_cached_s2_videos"] = [
+                                CachedUploadedFile(f.name, f.getvalue(), f.type) for f in _s2_vid_list
+                            ]
+                            if "_s2_vid_saved_names" not in st.session_state:
+                                st.session_state["_s2_vid_saved_names"] = set()
+                            for f in _s2_vid_list:
+                                if f.name not in st.session_state["_s2_vid_saved_names"]:
+                                    _result = add_to_assets(uploaded_file=f)
+                                    if _result:
+                                        st.session_state["_s2_vid_saved_names"].add(f.name)
+                        s2_videos = _s2_vid_list if _s2_vid_list else list(st.session_state.get("_cached_s2_videos") or [])
+                        if not _s2_vid_list and s2_videos:
+                            st.caption(f"Loaded from session: {', '.join(f.name for f in s2_videos)}")
                         # From Assets — videos
                         _vid_assets = [a for a in _cat if a["type"] == "video"]
                         if _vid_assets:
@@ -9424,13 +9864,28 @@ try { inp.blur(); } catch (e3) {}
                                 if _a and os.path.exists(_a["path"]):
                                     _vid_asset_files.append(AssetFile(_a["path"], _a["name"], _a["mime"]))
                             s2_videos = list(s2_videos or []) + _vid_asset_files
-                        s2_audio = st.file_uploader(
+                        _s2_aud_raw = st.file_uploader(
                             "Audio (Max 3)",
                             type=['mp3'],
                             accept_multiple_files=True,
                             key="s2_audio",
                             help="MP3",
                         )
+                        _s2_aud_list = _materialize_multi_file_upload(_s2_aud_raw)
+                        if _s2_aud_list:
+                            st.session_state["_cached_s2_audio"] = [
+                                CachedUploadedFile(f.name, f.getvalue(), f.type) for f in _s2_aud_list
+                            ]
+                            if "_s2_aud_saved_names" not in st.session_state:
+                                st.session_state["_s2_aud_saved_names"] = set()
+                            for f in _s2_aud_list:
+                                if f.name not in st.session_state["_s2_aud_saved_names"]:
+                                    _result = add_to_assets(uploaded_file=f)
+                                    if _result:
+                                        st.session_state["_s2_aud_saved_names"].add(f.name)
+                        s2_audio = _s2_aud_list if _s2_aud_list else list(st.session_state.get("_cached_s2_audio") or [])
+                        if not _s2_aud_list and s2_audio:
+                            st.caption(f"Loaded from session: {', '.join(f.name for f in s2_audio)}")
                         # From Assets — audio
                         _aud_assets = [a for a in _cat if a["type"] == "audio"]
                         if _aud_assets:
@@ -9466,7 +9921,15 @@ try { inp.blur(); } catch (e3) {}
                     # ── Asset tags info (after uploaders + From Assets) ──
                     if total_files > 0:
                         tag_list = [f"@Image {i+1}" for i in range(num_imgs)] + [f"@Video {i+1}" for i in range(num_vids)] + [f"@Audio {i+1}" for i in range(num_auds)]
-                        st.info(f"**Tags:** {', '.join(tag_list)}")
+                        _tag_details = []
+                        _all_console_files = list(s2_images or []) + list(s2_videos or []) + list(s2_audio or [])
+                        for _ti, _tname in enumerate(tag_list):
+                            if _ti < len(_all_console_files):
+                                _fn = getattr(_all_console_files[_ti], "name", "?")[:25]
+                                _tag_details.append(f"{_tname} = {_fn}")
+                            else:
+                                _tag_details.append(_tname)
+                        st.info(f"**Tags:** {' · '.join(_tag_details)}")
                         if total_files > 12:
                             st.warning(f"Seedance 2.0 limit exceeded: max 12 total files (current: {total_files}).")
                         if num_imgs > 9:
@@ -9475,6 +9938,21 @@ try { inp.blur(); } catch (e3) {}
                             st.warning(f"Seedance 2.0 limit exceeded: max 3 videos (current: {num_vids}).")
                         if num_auds > 3:
                             st.warning(f"Seedance 2.0 limit exceeded: max 3 audio files (current: {num_auds}).")
+                    _ref_tag_map = {}
+                    if total_files > 0:
+                        for _i, _f in enumerate(s2_images or []):
+                            _n = getattr(_f, "name", "") or ""
+                            if _n:
+                                _ref_tag_map[_n] = f"@Image {_i + 1}"
+                        for _i, _f in enumerate(s2_videos or []):
+                            _n = getattr(_f, "name", "") or ""
+                            if _n:
+                                _ref_tag_map[_n] = f"@Video {_i + 1}"
+                        for _i, _f in enumerate(s2_audio or []):
+                            _n = getattr(_f, "name", "") or ""
+                            if _n:
+                                _ref_tag_map[_n] = f"@Audio {_i + 1}"
+                    st.session_state["_console_ref_tag_map"] = _ref_tag_map
 
                     if num_imgs > 0:
                         btn_cols = st.columns(min(num_imgs, 4))
@@ -9511,13 +9989,20 @@ try { inp.blur(); } catch (e3) {}
                             'letter-spacing:0.08em; text-transform:uppercase;">First Frame</p>',
                             unsafe_allow_html=True,
                         )
-                        s15_first_frame = st.file_uploader(
+                        _s15_ff_raw = st.file_uploader(
                             "Opening frame",
                             type=['png', 'jpg', 'jpeg'],
                             accept_multiple_files=False,
                             key="s15_first_frame",
                             help="PNG, JPG, JPEG",
                         )
+                        if _s15_ff_raw:
+                            st.session_state["_cached_s15_first_frame"] = CachedUploadedFile(
+                                _s15_ff_raw.name, _s15_ff_raw.getvalue(), _s15_ff_raw.type
+                            )
+                        s15_first_frame = _s15_ff_raw if _s15_ff_raw else st.session_state.get("_cached_s15_first_frame")
+                        if not _s15_ff_raw and s15_first_frame:
+                            st.caption(f"Loaded from session: {s15_first_frame.name}")
                         _cat = load_asset_catalog()
                         _active_proj = get_active_project_id()
                         if _active_proj:
@@ -9536,13 +10021,20 @@ try { inp.blur(); } catch (e3) {}
                             'letter-spacing:0.08em; text-transform:uppercase;">Last Frame</p>',
                             unsafe_allow_html=True,
                         )
-                        s15_last_frame = st.file_uploader(
+                        _s15_lf_raw = st.file_uploader(
                             "Closing frame",
                             type=['png', 'jpg', 'jpeg'],
                             accept_multiple_files=False,
                             key="s15_last_frame",
                             help="PNG, JPG, JPEG",
                         )
+                        if _s15_lf_raw:
+                            st.session_state["_cached_s15_last_frame"] = CachedUploadedFile(
+                                _s15_lf_raw.name, _s15_lf_raw.getvalue(), _s15_lf_raw.type
+                            )
+                        s15_last_frame = _s15_lf_raw if _s15_lf_raw else st.session_state.get("_cached_s15_last_frame")
+                        if not _s15_lf_raw and s15_last_frame:
+                            st.caption(f"Loaded from session: {s15_last_frame.name}")
                         if _img_assets and not s15_last_frame:
                             _lf_opts = ["(none)"] + [f"{a['name']} ({a['size_str']})" for a in _img_assets]
                             _lf_sel = st.selectbox("Or pick from Assets", _lf_opts,
@@ -9566,13 +10058,28 @@ try { inp.blur(); } catch (e3) {}
                             st.warning("Upload a First Frame image.")
 
                     elif s15_is_first_only:
-                        s15_images = st.file_uploader(
+                        _s15_img_raw = st.file_uploader(
                             "First Frame Image",
                             type=['png', 'jpg', 'jpeg'],
                             accept_multiple_files=False,
                             key="s15_images_single",
                             help="PNG, JPG, JPEG",
                         )
+                        if _s15_img_raw:
+                            st.session_state["_cached_s15_images"] = [
+                                CachedUploadedFile(_s15_img_raw.name, _s15_img_raw.getvalue(), _s15_img_raw.type)
+                            ]
+                            if "_s15_img_saved_names" not in st.session_state:
+                                st.session_state["_s15_img_saved_names"] = set()
+                            for f in (_s15_img_raw,):
+                                if f.name not in st.session_state["_s15_img_saved_names"]:
+                                    _result = add_to_assets(uploaded_file=f)
+                                    if _result:
+                                        st.session_state["_s15_img_saved_names"].add(f.name)
+                        _s15_from_cache = list(st.session_state.get("_cached_s15_images") or [])
+                        s15_images = _s15_img_raw if _s15_img_raw else (_s15_from_cache[0] if _s15_from_cache else None)
+                        if not _s15_img_raw and s15_images:
+                            st.caption(f"Loaded from session: {s15_images.name}")
                         _cat = load_asset_catalog()
                         _active_proj = get_active_project_id()
                         if _active_proj:
@@ -9622,14 +10129,36 @@ try { inp.blur(); } catch (e3) {}
                             if f"s15_vision_report_{i}" in st.session_state:
                                 s15_vision_list.append(st.session_state[f"s15_vision_report_{i}"])
                         st.session_state.s15_vision_context = s15_vision_list
+                    _s15_ref_tag_map = {}
+                    if s15_num_imgs > 0:
+                        for _i, _f in enumerate(s15_images or []):
+                            _n = getattr(_f, "name", "") or ""
+                            if _n:
+                                _s15_ref_tag_map[_n] = f"@Image {_i + 1}"
+                    st.session_state["_console_ref_tag_map"] = _s15_ref_tag_map
                 else:
-                    sd_refs = st.file_uploader(
+                    _sd_refs_raw = st.file_uploader(
                         "Reference images (Optional)",
                         type=['png', 'jpg', 'jpeg', 'webp'],
                         accept_multiple_files=True,
                         key="sd_refs_upload",
                         help="PNG, JPG, JPEG",
                     )
+                    _sd_refs_list = _materialize_multi_file_upload(_sd_refs_raw)
+                    if _sd_refs_list:
+                        st.session_state["_cached_sd_refs"] = [
+                            CachedUploadedFile(f.name, f.getvalue(), f.type) for f in _sd_refs_list
+                        ]
+                        if "_sd_ref_saved_names" not in st.session_state:
+                            st.session_state["_sd_ref_saved_names"] = set()
+                        for f in _sd_refs_list:
+                            if f.name not in st.session_state["_sd_ref_saved_names"]:
+                                _result = add_to_assets(uploaded_file=f)
+                                if _result:
+                                    st.session_state["_sd_ref_saved_names"].add(f.name)
+                    sd_refs = _sd_refs_list if _sd_refs_list else list(st.session_state.get("_cached_sd_refs") or [])
+                    if not _sd_refs_list and sd_refs:
+                        st.caption(f"Loaded from session: {', '.join(f.name for f in sd_refs)}")
                     _cat = load_asset_catalog()
                     _active_proj = get_active_project_id()
                     if _active_proj:
@@ -9651,12 +10180,21 @@ try { inp.blur(); } catch (e3) {}
                     # ── Reference tag info (after uploaders + From Assets) ──
                     if sd_refs:
                         st.info(f"Attached {len(sd_refs)} reference image(s).")
+                    _sd_ref_tag_map = {}
+                    if sd_refs:
+                        for _i, _f in enumerate(sd_refs):
+                            _n = getattr(_f, "name", "") or ""
+                            if _n:
+                                _sd_ref_tag_map[_n] = f"@Image {_i + 1}"
+                    st.session_state["_console_ref_tag_map"] = _sd_ref_tag_map
 
             if st.button("PROJECTS", key="top_projects_btn", use_container_width=True):
+                _save_console_param_snapshot()
                 st.session_state.active_page = "projects"
                 st.rerun()
 
             if st.button("ASSETS", key="top_assets_btn", use_container_width=True):
+                _save_console_param_snapshot()
                 st.session_state.active_page = "assets"
                 st.rerun()
 
@@ -9849,8 +10387,6 @@ try { inp.blur(); } catch (e3) {}
 
             # Persist clicks across reruns (Streamlit buttons are edge-triggered)
             if preview_clicked:
-                st.session_state.json_preview = None
-                st.session_state["_json_dict"] = None
                 if model_sel == "SEEDANCE 2.0":
                     st.session_state["_do_preview_s2"] = True
                 elif model_sel == "SEEDANCE 1.5":
@@ -9932,6 +10468,8 @@ try { inp.blur(); } catch (e3) {}
                             s15_audio_details['timbre'] = s15_v_timbre
                             s15_audio_details['pace'] = s15_v_pace
 
+            _save_console_param_snapshot()
+
             if st.button("GALLERY", key="top_gallery_btn", use_container_width=True):
                 st.session_state.active_page = "gallery"
                 st.rerun()
@@ -9946,15 +10484,6 @@ try { inp.blur(); } catch (e3) {}
                 st.rerun()
 
         if json_clicked:
-            if model_sel == "SEEDANCE 2.0":
-                st.session_state.s2_opt_prompt = ""
-                st.session_state.s2_raw_prompt = ""
-            elif model_sel == "SEEDANCE 1.5":
-                st.session_state.s15_opt_prompt = ""
-                st.session_state.s15_raw_prompt = ""
-            else:
-                st.session_state.sd_opt_prompt = ""
-                st.session_state.sd_raw_prompt = ""
             if model_sel == "SEEDANCE 2.0":
                 _seeds = [st.session_state.get(f"seed_input_{i}", "") for i in range(st.session_state.get("common_num_variations", 1))]
                 _json = _build_settings_json(
@@ -10016,6 +10545,7 @@ try { inp.blur(); } catch (e3) {}
                 )
             st.session_state.json_preview = json.dumps(_json, indent=2, ensure_ascii=False)
             st.session_state["_json_dict"] = _json
+            _save_console_param_snapshot()
             st.rerun()
 
         st.markdown("<br>", unsafe_allow_html=True)
@@ -10028,8 +10558,6 @@ try { inp.blur(); } catch (e3) {}
                 st.warning(fb)
             else:
                 st.error(fb)
-            # Clear after showing
-            del st.session_state["_preview_feedback"]
 
         _raw_val = st.session_state.get("s15_raw_prompt", "") if model_sel == "SEEDANCE 1.5" else (st.session_state.get("s2_raw_prompt", "") if model_sel == "SEEDANCE 2.0" else st.session_state.get("sd_raw_prompt", ""))
         _opt_val = st.session_state.get("s15_opt_prompt", "") if model_sel == "SEEDANCE 1.5" else (st.session_state.get("s2_opt_prompt", "") if model_sel == "SEEDANCE 2.0" else st.session_state.get("sd_opt_prompt", ""))
@@ -10066,7 +10594,6 @@ try { inp.blur(); } catch (e3) {}
 
         # S2.0 preview
         if model_sel == "SEEDANCE 2.0" and st.session_state.get("_do_preview_s2"):
-            st.session_state.pop("s2_last_result", None)
             if not action_desc or not str(action_desc).strip():
                 st.error("Write a scene description before pressing PREVIEW.")
                 st.session_state["_do_preview_s2"] = False
@@ -10105,7 +10632,6 @@ try { inp.blur(); } catch (e3) {}
                         st.session_state.s2_raw_prompt = ""
                         st.session_state.s2_opt_prompt = f"[ERROR: {e}]"
                     st.session_state["_do_preview_s2"] = False
-                st.session_state.pop("canvas_prompt_editor", None)
                 st.rerun()
 
         # S2.0 generate
@@ -10115,7 +10641,7 @@ try { inp.blur(); } catch (e3) {}
                 st.session_state["_do_generate_s2"] = False
             else:
                 chosen_prompt = st.session_state.get("s2_opt_prompt", "")
-                with st.spinner("Sending to BytePlus Ark (Seedance 2.0)..."):
+                with st.spinner("Generating Seedance 2.0... please wait 3-5 minutes"):
                     result = generate_video(
                         prompt_text=chosen_prompt, scene_description=(action_desc or "")[:20],
                         images=s2_images, videos=s2_videos, audios=s2_audio,
@@ -10170,9 +10696,6 @@ try { inp.blur(); } catch (e3) {}
 
         # S1.5 preview
         if model_sel == "SEEDANCE 1.5" and st.session_state.get("_do_preview_s15"):
-            st.session_state.pop("s15_last_result", None)
-            st.session_state["s15_opt_prompt"] = ""
-            st.session_state["s15_raw_prompt"] = ""
             if not s15_action_desc or not str(s15_action_desc).strip():
                 st.error("Write a scene description before pressing PREVIEW.")
                 st.session_state["_do_preview_s15"] = False
@@ -10207,7 +10730,6 @@ try { inp.blur(); } catch (e3) {}
                         st.session_state["s15_raw_prompt"] = ""
                         st.session_state["s15_opt_prompt"] = f"[ERROR: {e}]"
                 st.session_state["_do_preview_s15"] = False
-                st.session_state.pop("canvas_prompt_editor", None)
                 st.rerun()
 
         # S1.5 generate
@@ -10300,7 +10822,6 @@ try { inp.blur(); } catch (e3) {}
                         st.session_state["_preview_feedback"] = f"❌ Exception: {str(e)[:200]}"
                         st.session_state.sd_opt_prompt = f"[ERROR: {e}]"
                     st.session_state["_do_preview_sd"] = False
-                st.session_state.pop("canvas_prompt_editor", None)
                 st.rerun()
 
         # Seedream generate

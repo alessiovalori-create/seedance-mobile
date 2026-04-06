@@ -354,6 +354,28 @@ def _log_generation_cost(model, duration, resolution, service_tier,
         writer.writerow(row)
 
 
+def _atlas_file_io_upload(fname, raw, mime="application/octet-stream"):
+    """Upload bytes to file.io; return an HTTPS URL or None."""
+    try:
+        resp = requests.post(
+            "https://file.io",
+            files={"file": (fname, raw, mime)},
+            timeout=120,
+        )
+        if not resp.ok:
+            return None
+        try:
+            data = resp.json()
+        except Exception:
+            return None
+        link = (data.get("link") or "").strip()
+        if link.startswith("http"):
+            return link
+        return None
+    except Exception:
+        return None
+
+
 def _generate_video_atlas(prompt_text, scene_description, images=[], videos=[], audios=[],
                           seed="-1", resolution="720p", aspect_ratio="16:9", duration=5,
                           generate_audio=True, is_draft=False, model_variant="sedeo-2.0",
@@ -374,8 +396,12 @@ def _generate_video_atlas(prompt_text, scene_description, images=[], videos=[], 
 
     for i, file in enumerate(image_files):
         try:
-            b64 = base64.b64encode(file.getvalue()).decode("utf-8")
-            mime = (file.type or "image/jpeg").split(";")[0].strip()
+            raw = file.getvalue()
+            fname = getattr(file, "name", f"ref_image_{i}.jpg")
+            mime = (getattr(file, "type", None) or "image/jpeg").split(";")[0].strip() or "image/jpeg"
+            _pub_url = _atlas_file_io_upload(fname, raw, mime)
+            if not _pub_url:
+                continue
             if is_first_last:
                 role = "first_frame" if i == 0 else "last_frame"
             elif i == 0 and image_usage in ("first_frame", "auto") and len(image_files) == 1:
@@ -384,34 +410,40 @@ def _generate_video_atlas(prompt_text, scene_description, images=[], videos=[], 
                 role = "reference_image"
             content_list.append({
                 "type": "image_url",
-                "image_url": {"url": f"data:{mime};base64,{b64}"},
+                "image_url": {"url": _pub_url},
                 "role": role,
             })
         except Exception:
             pass
 
-    # Videos with role
+    # Videos with role — Atlas requires web URL, not base64
     for file in (videos or [])[:3]:
         try:
-            b64 = base64.b64encode(file.getvalue()).decode("utf-8")
-            mime = (file.type or "video/mp4").split(";")[0].strip()
-            content_list.append({
-                "type": "video_url",
-                "video_url": {"url": f"data:{mime};base64,{b64}"},
-                "role": "reference_video",
-            })
+            raw = file.getvalue()
+            fname = getattr(file, 'name', 'ref_video.mp4')
+            _pub_url = _atlas_file_io_upload(fname, raw, "video/mp4")
+            if _pub_url:
+                content_list.append({
+                    "type": "video_url",
+                    "video_url": {"url": _pub_url},
+                    "role": "reference_video",
+                })
         except Exception:
             pass
 
-    # Audio with role
+    # Audio with role — use hosted URL (base64 blows up JSON / Cloudflare 524)
     if generate_audio:
-        for file in (audios or [])[:3]:
+        for j, file in enumerate((audios or [])[:3]):
             try:
-                b64 = base64.b64encode(file.getvalue()).decode("utf-8")
-                mime = (file.type or "audio/wav").split(";")[0].strip()
+                raw = file.getvalue()
+                fname = getattr(file, "name", f"ref_audio_{j}.wav")
+                mime = (getattr(file, "type", None) or "audio/wav").split(";")[0].strip() or "audio/wav"
+                _pub_url = _atlas_file_io_upload(fname, raw, mime)
+                if not _pub_url:
+                    continue
                 content_list.append({
                     "type": "audio_url",
-                    "audio_url": {"url": f"data:{mime};base64,{b64}"},
+                    "audio_url": {"url": _pub_url},
                     "role": "reference_audio",
                 })
             except Exception:
@@ -443,14 +475,22 @@ def _generate_video_atlas(prompt_text, scene_description, images=[], videos=[], 
         payload["seed"] = seed_int
 
     try:
-        _session = _session_for_ark()
-        response = _session.post(ATLAS_TASK_URL, headers=headers, json=payload, timeout=30, verify=True)
+        _atlas_session = requests.Session()
+        try:
+            response = _atlas_session.post(ATLAS_TASK_URL, headers=headers, json=payload, timeout=120, verify=True)
+        except Exception as post_err:
+            return f"Atlas connection error: {post_err}"
         if not response.ok:
             try:
                 err_body = response.json()
                 err_msg = err_body.get("message") or str(err_body)
             except Exception:
                 err_msg = response.text[:500]
+            if response.status_code == 524 or "<!DOCTYPE html>" in (response.text or "")[:800]:
+                err_msg = (
+                    "Cloudflare/gateway timeout or HTML error (often oversized JSON body). "
+                    f"Raw: {err_msg[:240]}"
+                )
             return f"Atlas API Error ({response.status_code}): {err_msg}"
         res_json = response.json()
         task_data = res_json.get("data") or res_json
@@ -462,7 +502,7 @@ def _generate_video_atlas(prompt_text, scene_description, images=[], videos=[], 
         poll_url = f"{ATLAS_TASK_URL}/{task_id}"
         for _ in range(180):  # 15 min max
             time.sleep(5)
-            s_res = _session.get(poll_url, headers=headers, timeout=10, verify=True)
+            s_res = _atlas_session.get(poll_url, headers=headers, timeout=15, verify=True)
             s_json = s_res.json()
             s_data = s_json.get("data") or s_json
             status = s_data.get("status", "")
