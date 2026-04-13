@@ -9918,6 +9918,19 @@ try { inp.blur(); } catch (e3) {}
                                 key="s2_image_usage",
                             )
 
+                    # Safety net: all-in-one only — if uploads are empty on rerun, restore from session cache
+                    if not is_first_last and not is_first_frame:
+                        if not s2_videos and st.session_state.get("_cached_s2_videos"):
+                            s2_videos = list(st.session_state.get("_cached_s2_videos"))
+                        if not s2_images and st.session_state.get("_cached_s2_images"):
+                            s2_images = list(st.session_state.get("_cached_s2_images"))
+                        if not s2_audio and st.session_state.get("_cached_s2_audio"):
+                            s2_audio = list(st.session_state.get("_cached_s2_audio"))
+                        num_imgs = len(s2_images) if s2_images else 0
+                        num_vids = len(s2_videos) if s2_videos else 0
+                        num_auds = len(s2_audio) if s2_audio else 0
+                        total_files = num_imgs + num_vids + num_auds
+
                     # ── Asset tags info (after uploaders + From Assets) ──
                     if total_files > 0:
                         tag_list = [f"@Image {i+1}" for i in range(num_imgs)] + [f"@Video {i+1}" for i in range(num_vids)] + [f"@Audio {i+1}" for i in range(num_auds)]
@@ -10375,6 +10388,7 @@ try { inp.blur(); } catch (e3) {}
                 st.markdown('</div>', unsafe_allow_html=True)
 
             if generate_clicked:
+                print(f"[DEBUG-CLICK] has_prompt={has_prompt}, has_result={has_result}, model={model_sel}, opt_prompt_len={len(st.session_state.get(chr(115)+chr(50)+chr(95)+chr(111)+chr(112)+chr(116)+chr(95)+chr(112)+chr(114)+chr(111)+chr(109)+chr(112)+chr(116), chr(32)))}")
                 st.markdown("""
                     <style>
                     div[data-testid="stButton"][data-key*="s2_production_opt"] > button,
@@ -10641,6 +10655,7 @@ try { inp.blur(); } catch (e3) {}
                 st.session_state["_do_generate_s2"] = False
             else:
                 chosen_prompt = st.session_state.get("s2_opt_prompt", "")
+                print(f"[DEBUG-GEN-S2] s2_images={len(s2_images) if s2_images else 0}, s2_videos={len(s2_videos) if s2_videos else 0}, s2_audio={len(s2_audio) if s2_audio else 0}, workflow={s2_workflow}")
                 with st.spinner("Generating Seedance 2.0... please wait 3-5 minutes"):
                     result = generate_video(
                         prompt_text=chosen_prompt, scene_description=(action_desc or "")[:20],
