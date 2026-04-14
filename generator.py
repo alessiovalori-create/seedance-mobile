@@ -63,14 +63,43 @@ def _session_for_ark():
 # Seedance 1.5 Pro: 480P/720P/1080P, 4–12s, 24fps, text+image only, first/last frame
 SEEDANCE_1_5_MODEL_ID = "seedance-1-5-pro-251215"  # ByteDance-Seedance-1.5-pro
 # Seedance 2.0: multimodal (text, images, videos, audio), 4–15s, 480P–2K, Video Extension/Editing
-SEEDANCE_2_0_MODEL_ID = os.getenv("SEEDANCE_2_MODEL_ID", "")
+SEEDANCE_2_0_MODEL_ID = os.getenv("SEEDANCE_2_MODEL_ID", "dreamina-seedance-2-0-260128")
 SEEDANCE_2_MODEL_ID = SEEDANCE_2_0_MODEL_ID  # Alias for backward compat
 SEEDREAM_4_5_MODEL_ID = "seedream-4-5-251128"     # ByteDance-Seedream-4.5
 # ByteDance-Seedream-5.0-lite (260128): text, single/multi-image, image sets.
 SEEDREAM_5_0_LITE_MODEL_ID = os.getenv("SEEDREAM_5_MODEL_ID", "seedream-5-0-260128") 
 
 # ── Cost estimation ──────────────────────────────────────────
-def estimate_cost(model_id, resolution="720p", duration=5, generate_audio=False, is_draft=False, is_offline=False, aspect_ratio="16:9"):
+def _estimate_seedance2_tokens(duration=5, resolution="720p"):
+    """Estimate Seedance 2.0 tokens from official 5s 720p baseline."""
+    try:
+        dur = int(duration)
+    except (ValueError, TypeError):
+        dur = 5
+    if dur == -1:
+        dur = 5  # smart duration unknown before generation; use official baseline
+    dur = max(1, dur)
+    res_factor = 0.465 if str(resolution).strip() == "480p" else 1.0
+    # Official baseline: 5s 720p ~= 108,900 tokens
+    return int(round(108900 * (dur / 5.0) * res_factor))
+
+
+def _estimate_seedance2_usage(duration=5, resolution="720p", has_video_input=False):
+    """Return consumed tokens, pack deduction, and pay-as-you-go cost for Seedance 2.0."""
+    tokens_consumed = _estimate_seedance2_tokens(duration=duration, resolution=resolution)
+    rate_per_1k = 0.0043 if has_video_input else 0.0070
+    estimated_cost = (tokens_consumed / 1000.0) * rate_per_1k
+    deduction_ratio = 1.0 if has_video_input else 1.6279
+    tokens_deducted = int(round(tokens_consumed * deduction_ratio))
+    return {
+        "tokens_consumed": tokens_consumed,
+        "tokens_deducted": tokens_deducted,
+        "estimated_cost": estimated_cost,
+        "has_video_input": bool(has_video_input),
+    }
+
+
+def estimate_cost(model_id, resolution="720p", duration=5, generate_audio=False, is_draft=False, is_offline=False, aspect_ratio="16:9", has_video_input=False):
     """Return estimated cost in USD based on current ByteDance ARK pricing."""
 
     # ── Seedream (images) ──
@@ -107,13 +136,8 @@ def estimate_cost(model_id, resolution="720p", duration=5, generate_audio=False,
         cost = (tokens / 1_000_000) * rate
 
     else:
-        # Seedance 2.0 Pro pricing (per-second estimate)
-        per_sec = 0.06  # online
-        if is_draft:
-            per_sec = 0.03
-        elif is_offline:
-            per_sec = 0.03  # 50%
-        cost = per_sec * duration
+        usage = _estimate_seedance2_usage(duration=duration, resolution=resolution, has_video_input=has_video_input)
+        cost = usage["estimated_cost"]
 
     # Add LLM prompt refinement cost (~$0.0005)
     cost += 0.0005
@@ -128,7 +152,7 @@ def format_cost_str(cost):
     return f"${cost:.2f}"
 
 COST_PER_SEC = {
-    "seedance-2": {"Online": 0.060, "Offline": 0.030},
+    "seedance-2": {"with_video_input": 0.0043, "without_video_input": 0.0070},  # $ / 1K tokens
     "seedance-1-5": {"Online": 0.040, "Offline": 0.040},
 }
 COST_SEEDREAM_PER_IMAGE = 0.040
@@ -143,7 +167,7 @@ GENERATION_LOG_PATH = os.path.join(
 # HELPERS
 # ──────────────────────────────────────────────
 def save_video_with_metadata(video_url, prompt_text, scene_description, resolution, aspect_ratio, 
-                             duration, seed, generate_audio, is_draft, is_offline, model_id):
+                             duration, seed, generate_audio, is_draft, is_offline, model_id, has_video_input=False):
     """
     Download video, extract last frame, and save metadata file.
     Returns dict with paths: video_path, last_frame_path, info_file_path
@@ -209,8 +233,19 @@ def save_video_with_metadata(video_url, prompt_text, scene_description, resoluti
             f.write(f"Draft Mode: {is_draft}\n")
             f.write(f"Offline Mode: {is_offline}\n")
             f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            _est = estimate_cost(model_id, resolution, duration, generate_audio, is_draft, is_offline)
-            f.write(f"Estimated Cost: {format_cost_str(_est)}\n")
+            if "seedance-2" in str(model_id).lower():
+                usage = _estimate_seedance2_usage(
+                    duration=duration,
+                    resolution=resolution,
+                    has_video_input=has_video_input,
+                )
+                f.write(f"Estimated tokens consumed: {usage['tokens_consumed']}\n")
+                f.write(f"Resource pack tokens deducted: {usage['tokens_deducted']}\n")
+                f.write(f"Estimated cost (pay-as-you-go): ${usage['estimated_cost']:.4f}\n")
+                f.write(f"Input type: {'With video reference' if usage['has_video_input'] else 'Text/Image only'}\n")
+            else:
+                _est = estimate_cost(model_id, resolution, duration, generate_audio, is_draft, is_offline)
+                f.write(f"Estimated Cost: {format_cost_str(_est)}\n")
     except Exception as e:
         pass  # Info file is optional
     
@@ -306,11 +341,12 @@ def _estimate_cost(model, duration=None, resolution=None,
     m = model.lower()
 
     if "seedance-2" in m:
-        tier = service_tier if service_tier in ("Online", "Offline") else "Online"
-        rate = COST_PER_SEC["seedance-2"][tier]
-        base = rate * (duration or 10)
+        has_video_input = str(service_tier).lower() == "with_video_input"
+        usage = _estimate_seedance2_usage(duration=(duration or 10), resolution=(resolution or "720p"), has_video_input=has_video_input)
+        base = usage["estimated_cost"]
         cost += base
-        breakdown.append(f"Seedance 2.0 {duration}s {resolution} ({tier}): ${base:.4f}")
+        mode_lbl = "with video input" if has_video_input else "without video input"
+        breakdown.append(f"Seedance 2.0 {duration}s {resolution} ({mode_lbl}): ${base:.4f}, tokens={usage['tokens_consumed']}, pack={usage['tokens_deducted']}")
     elif "seedance-1-5" in m:
         rate = COST_PER_SEC["seedance-1-5"]["Online"]
         base = rate * (duration or 10)
@@ -336,6 +372,7 @@ def _log_generation_cost(model, duration, resolution, service_tier,
     row = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "model": model,
+        "provider": "ARK Direct" if "seedance-2" in str(model).lower() else "",
         "duration_s": duration or "",
         "resolution": resolution or "",
         "service_tier": service_tier or "",
@@ -375,11 +412,19 @@ def generate_video(prompt_text, scene_description, images=[], videos=[], audios=
         image_files = (images or [])[:9]
 
     # Images: use inline base64 (1.5 and 2.0 both need base64; 1.5 supports first/last frame)
-    for file in image_files:
+    for i, file in enumerate(image_files):
         try:
             b64 = base64.b64encode(file.getvalue()).decode("utf-8")
             mime = (file.type or "image/jpeg").split(";")[0].strip()
-            content_list.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+            item = {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
+            if not is_1_5:
+                if is_first_last_mode:
+                    item["role"] = "first_frame" if i == 0 else "last_frame"
+                elif i == 0 and kwargs.get("image_usage") in ("first_frame", "auto") and len(image_files) == 1:
+                    item["role"] = "first_frame"
+                else:
+                    item["role"] = "reference_image"
+            content_list.append(item)
         except Exception:
             pass
     # Videos/Audio: Seedance 1.5 is Text-to-video + Image-to-video ONLY — no video/audio input
@@ -389,14 +434,14 @@ def generate_video(prompt_text, scene_description, images=[], videos=[], audios=
             if out:
                 fid, url = out if isinstance(out, tuple) else (out, f"{FILE_UPLOAD_URL}/{out}")
                 if url:
-                    content_list.append({"type": "video_url", "video_url": {"url": url}})
+                    content_list.append({"type": "video_url", "video_url": {"url": url}, "role": "reference_video"})
         if generate_audio:
             for file in (audios or [])[:3]:
                 out = upload_file_to_byteplus(file)
                 if out:
                     fid, url = out if isinstance(out, tuple) else (out, f"{FILE_UPLOAD_URL}/{out}")
                     if url:
-                        content_list.append({"type": "audio_url", "audio_url": {"url": url}})
+                        content_list.append({"type": "audio_url", "audio_url": {"url": url}, "role": "reference_audio"})
 
     try:
         seed_int = int(seed) if seed and str(seed).strip() != "-1" else None
@@ -420,29 +465,38 @@ def generate_video(prompt_text, scene_description, images=[], videos=[], audios=
     if camera_fixed is None:
         camera_fixed = False
 
-    # service_tier: 'Online' (default/fast) or 'Offline' (flex batch, 50% cost)
+    # service_tier is still used for polling timeout / cost logging only
     service_tier = "Offline" if is_offline else "Online"
     if is_draft:
-        service_tier = "Online"  # draft uses online
+        service_tier = "Online"
 
-    payload = {
-        "model": model,
-        "content": content_list,
-        "seed": seed_int,
-        "resolution": "480p" if is_draft else resolution,
-        "ratio": aspect_ratio,
-        "duration": duration_int,
-        "camera_fixed": bool(camera_fixed),
-        "generate_audio": bool(generate_audio),
-    }
-    # service_tier (Online/Offline) only supported by Seedance 2.0; 1.5 Pro t2v rejects it
-    if not is_1_5:
-        payload["service_tier"] = service_tier
-    if is_draft:
-        payload["draft"] = True
-    # 1080p: disable Adaptive Aspect Ratio per production rules
-    if is_1_5 and res_normalized == "1080p":
-        payload["adaptive_aspect_ratio"] = False
+    if is_1_5:
+        payload = {
+            "model": model,
+            "content": content_list,
+            "seed": seed_int,
+            "resolution": "480p" if is_draft else resolution,
+            "ratio": aspect_ratio,
+            "duration": duration_int,
+            "camera_fixed": bool(camera_fixed),
+            "generate_audio": bool(generate_audio),
+        }
+        # 1080p: disable Adaptive Aspect Ratio per production rules
+        if res_normalized == "1080p":
+            payload["adaptive_aspect_ratio"] = False
+    else:
+        payload = {
+            "model": model,
+            "content": content_list,
+            "resolution": resolution,
+            "ratio": aspect_ratio,
+            "duration": duration_int,
+            "seed": seed_int if seed_int is not None else -1,
+            "generate_audio": bool(generate_audio),
+            "watermark": False,
+            "return_last_frame": True,
+        }
+    has_video_reference = any((it or {}).get("type") == "video_url" for it in content_list if isinstance(it, dict))
 
     try:
         _session = _session_for_ark()
@@ -455,7 +509,10 @@ def generate_video(prompt_text, scene_description, images=[], videos=[], audios=
                 err_msg = response.text[:500]
             return f"Video API Error ({response.status_code}): {err_msg}"
         res_json = response.json()
-        task_id = res_json.get("id")
+        task_data = res_json.get("data") if isinstance(res_json, dict) else None
+        task_id = (task_data or {}).get("id") if isinstance(task_data, dict) else None
+        if not task_id:
+            task_id = res_json.get("id") if isinstance(res_json, dict) else None
         if not task_id:
             return f"API did not return task id: {res_json}"
         
@@ -466,9 +523,16 @@ def generate_video(prompt_text, scene_description, images=[], videos=[], audios=
         for _ in range(poll_max):
             time.sleep(5)
             s_res = _session.get(status_url, headers=headers, timeout=10, verify=_ssl_verify)
-            status = s_res.json().get("status")
+            s_json = s_res.json()
+            s_data = s_json.get("data") if isinstance(s_json, dict) and isinstance(s_json.get("data"), dict) else s_json
+            status = s_data.get("status")
             if status == "succeeded":
-                video_url = s_res.json().get("content", {}).get("video_url")
+                content_obj = s_data.get("content", {}) if isinstance(s_data, dict) else {}
+                video_url = content_obj.get("video_url")
+                if not video_url:
+                    outputs = s_data.get("outputs") if isinstance(s_data, dict) else None
+                    if isinstance(outputs, list) and outputs:
+                        video_url = outputs[0]
                 if video_url:
                     # Save video, extract last frame, and create info file
                     saved_paths = save_video_with_metadata(
@@ -482,7 +546,8 @@ def generate_video(prompt_text, scene_description, images=[], videos=[], audios=
                         generate_audio=generate_audio,
                         is_draft=is_draft,
                         is_offline=is_offline,
-                        model_id=model
+                        model_id=model,
+                        has_video_input=has_video_reference,
                     )
                     return {
                         "video": video_url,
@@ -491,8 +556,13 @@ def generate_video(prompt_text, scene_description, images=[], videos=[], audios=
                         "info_file_path": saved_paths.get("info_file_path")
                     }
                 return {"video": video_url}
-            elif status == "failed": 
-                return f"Failed: {s_res.json().get('error', {}).get('message')}"
+            elif status == "failed":
+                err_obj = s_data.get("error") if isinstance(s_data, dict) else None
+                if isinstance(err_obj, dict):
+                    err_msg = err_obj.get("message") or err_obj.get("code") or str(err_obj)
+                else:
+                    err_msg = s_data.get("message") if isinstance(s_data, dict) else None
+                return f"Failed: {err_msg or 'Unknown error'}"
         return "Timeout."
     except requests.exceptions.HTTPError as e:
         try:

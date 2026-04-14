@@ -21,7 +21,7 @@ import streamlit.components.v1 as components
 import base64 as _b64
 
 from builder import build_prompt as build_video_prompt, analyze_cinematography, build_image_prompt
-from generator import generate_video, generate_seedream_image, SEEDANCE_1_5_MODEL_ID, SEEDANCE_2_0_MODEL_ID, SEEDREAM_5_0_LITE_MODEL_ID, SEEDREAM_4_5_MODEL_ID, PEXELS_API_KEY, UNSPLASH_API_KEY, estimate_cost, format_cost_str
+from generator import generate_video, generate_seedream_image, SEEDANCE_1_5_MODEL_ID, SEEDANCE_2_0_MODEL_ID, SEEDREAM_5_0_LITE_MODEL_ID, SEEDREAM_4_5_MODEL_ID, PEXELS_API_KEY, UNSPLASH_API_KEY, estimate_cost, format_cost_str, _estimate_seedance2_usage
 GENERATION_ENABLED = True  # ← Set to False to disable generation
 try:
     from streamlit_sortables import sort_items
@@ -10291,6 +10291,9 @@ try { inp.blur(); } catch (e3) {}
                 if model_sel == "SEEDANCE 2.0":
                     r = st.session_state.s2_last_result
                     if r.get("video"): st.video(r["video"])
+                    _actual_duration = r.get("duration") or r.get("actual_duration") or r.get("video_duration")
+                    if _actual_duration is not None:
+                        st.caption(f"Actual duration: {_actual_duration}s")
                 elif model_sel == "SEEDANCE 1.5":
                     r = st.session_state.s15_last_result
                     if r.get("video"): st.video(r["video"])
@@ -10423,10 +10426,18 @@ try { inp.blur(); } catch (e3) {}
         with right_col:
             with st.expander("TECHNICAL", expanded=False):
                 if model_sel == "SEEDANCE 2.0":
-                    resolution = st.selectbox("Resolution", ["2K", "1080p", "720p", "480p"], key="video_resolution")
-                    aspect_ratio = st.selectbox("Aspect Ratio", ["16:9", "9:16", "4:3", "3:4", "21:9", "1:1"], key="video_aspect_ratio")
-                    duration = st.slider("Duration (s)", min_value=4, max_value=15, value=15, step=1, key="common_duration")
-                    gen_mode = st.radio("Processing Mode", ["Standard (Online)", "Draft Mode (Preview)", "Offline (50% Cost)"], horizontal=True, key="gen_mode_selector")
+                    if st.session_state.get("video_resolution") not in ("720p", "480p"):
+                        st.session_state["video_resolution"] = "720p"
+                    if st.session_state.get("video_aspect_ratio") not in ("16:9", "9:16", "4:3", "3:4", "21:9", "1:1", "adaptive"):
+                        st.session_state["video_aspect_ratio"] = "adaptive"
+                    resolution = st.selectbox("Resolution", ["720p", "480p"], key="video_resolution")
+                    aspect_ratio = st.selectbox("Aspect Ratio", ["16:9", "9:16", "4:3", "3:4", "21:9", "1:1", "adaptive"], key="video_aspect_ratio")
+                    _duration_slider = st.slider("Duration (s)", min_value=4, max_value=15, value=15, step=1, key="common_duration")
+                    _smart_duration = st.checkbox("Smart Duration (-1)", key="s2_smart_duration")
+                    duration = -1 if _smart_duration else _duration_slider
+                    gen_mode = "Standard (Online)"
+                    st.caption("Processing Mode: Standard (Online)")
+                    st.checkbox("Watermark", key="s2_watermark")
                 elif model_sel == "SEEDANCE 1.5":
                     s15_resolution = st.selectbox("Resolution", ["1080p", "720p", "480p"], key="s15_resolution")
                     s15_aspect_ratio = st.selectbox("Aspect Ratio", ["16:9", "9:16", "1:1", "3:4"], key="s15_aspect_ratio")
@@ -10580,10 +10591,23 @@ try { inp.blur(); } catch (e3) {}
         # ── Estimated cost display ──
         if _opt_val and _opt_val.strip() and not _opt_val.startswith("[ERROR"):
             if model_sel == "SEEDANCE 2.0":
-                _est_cost = estimate_cost(
-                    SEEDANCE_2_0_MODEL_ID, resolution, duration, gen_audio,
-                    is_draft=(gen_mode == "Draft Mode (Preview)"),
-                    is_offline=(gen_mode == "Offline (50% Cost)"),
+                _has_video_ref = (num_vids or 0) > 0
+                _usage = _estimate_seedance2_usage(
+                    duration=duration,
+                    resolution=resolution,
+                    has_video_input=_has_video_ref,
+                )
+                _tokens_k = _usage["tokens_consumed"] / 1000.0
+                _deduct_k = _usage["tokens_deducted"] / 1000.0
+                _est_cost = _usage["estimated_cost"]
+                st.markdown(
+                    f'<p style="color:#FFEB3B;-webkit-text-fill-color:#FFEB3B;'
+                    f'font-size:0.85rem;font-weight:700;font-family:Open Sans,sans-serif;'
+                    f'margin:4px 0 0;padding:6px 10px;'
+                    f'background:rgba(255,235,59,0.08);border-radius:4px;'
+                    f'border-left:3px solid #FFEB3B;">'
+                    f'Est. ~{_tokens_k:.1f}K tokens | ~${_est_cost:.3f} | Pack deduction: {_deduct_k:.1f}K tokens</p>',
+                    unsafe_allow_html=True,
                 )
             elif model_sel == "SEEDANCE 1.5":
                 _est_cost = estimate_cost(
@@ -10596,15 +10620,16 @@ try { inp.blur(); } catch (e3) {}
                 _est_cost = estimate_cost(
                     SEEDREAM_5_0_LITE_MODEL_ID, sd_resolution,
                 )
-            st.markdown(
-                f'<p style="color:#FFEB3B;-webkit-text-fill-color:#FFEB3B;'
-                f'font-size:0.85rem;font-weight:700;font-family:Open Sans,sans-serif;'
-                f'margin:4px 0 0;padding:6px 10px;'
-                f'background:rgba(255,235,59,0.08);border-radius:4px;'
-                f'border-left:3px solid #FFEB3B;">'
-                f'Estimated cost: {format_cost_str(_est_cost)}</p>',
-                unsafe_allow_html=True,
-            )
+            if model_sel != "SEEDANCE 2.0":
+                st.markdown(
+                    f'<p style="color:#FFEB3B;-webkit-text-fill-color:#FFEB3B;'
+                    f'font-size:0.85rem;font-weight:700;font-family:Open Sans,sans-serif;'
+                    f'margin:4px 0 0;padding:6px 10px;'
+                    f'background:rgba(255,235,59,0.08);border-radius:4px;'
+                    f'border-left:3px solid #FFEB3B;">'
+                    f'Estimated cost: {format_cost_str(_est_cost)}</p>',
+                    unsafe_allow_html=True,
+                )
 
         # S2.0 preview
         if model_sel == "SEEDANCE 2.0" and st.session_state.get("_do_preview_s2"):
@@ -10666,12 +10691,23 @@ try { inp.blur(); } catch (e3) {}
                         generate_audio=(gen_audio or st.session_state.get("s2_audio_output", False)),
                         audio_details=audio_details_dict,
                         is_draft=(gen_mode == "Draft Mode (Preview)"), is_offline=(gen_mode == "Offline (50% Cost)"),
+                        watermark=st.session_state.get("s2_watermark", False),
                         model_id=SEEDANCE_2_0_MODEL_ID, shots_data=shots_data,
                     )
                     if isinstance(result, dict) and result.get("video"):
                         st.session_state.s2_last_result = result
-                        _s2_est_cost = estimate_cost(SEEDANCE_2_0_MODEL_ID, resolution, duration, gen_audio, is_draft=(gen_mode == "Draft Mode (Preview)"), is_offline=(gen_mode == "Offline (50% Cost)"))
-                        st.session_state.gallery_videos.append({"url": result["video"], "caption": (action_desc or "Seedance 2.0")[:50], "prompt": chosen_prompt, "resolution": resolution, "duration": duration, "aspect_ratio": aspect_ratio, "video_path": result.get("video_path"), "last_frame_path": result.get("last_frame_path"), "model": "Seedance 2.0", "created_at": datetime.now().isoformat(), "project_id": st.session_state.get("active_project_id"), "estimated_cost": _s2_est_cost})
+                        _s2_est_cost = estimate_cost(
+                            SEEDANCE_2_0_MODEL_ID,
+                            resolution,
+                            duration,
+                            gen_audio,
+                            is_draft=(gen_mode == "Draft Mode (Preview)"),
+                            is_offline=(gen_mode == "Offline (50% Cost)"),
+                            has_video_input=((num_vids or 0) > 0),
+                        )
+                        _actual_duration = result.get("duration") or result.get("actual_duration") or result.get("video_duration")
+                        _duration_for_gallery = _actual_duration if _actual_duration is not None else duration
+                        st.session_state.gallery_videos.append({"url": result["video"], "caption": (action_desc or "Seedance 2.0")[:50], "prompt": chosen_prompt, "resolution": resolution, "duration": _duration_for_gallery, "aspect_ratio": aspect_ratio, "video_path": result.get("video_path"), "last_frame_path": result.get("last_frame_path"), "model": "Seedance 2.0", "created_at": datetime.now().isoformat(), "project_id": st.session_state.get("active_project_id"), "estimated_cost": _s2_est_cost})
                         _settings = st.session_state.get("_json_dict")
                         if _settings is None:
                             _seeds_sv = [st.session_state.get(f"seed_input_{i}", "") for i in range(st.session_state.get("common_num_variations", 1))]
