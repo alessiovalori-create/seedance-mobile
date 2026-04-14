@@ -493,7 +493,7 @@ def generate_video(prompt_text, scene_description, images=[], videos=[], audios=
             "duration": duration_int,
             "seed": seed_int if seed_int is not None else -1,
             "generate_audio": bool(generate_audio),
-            "watermark": False,
+            "watermark": bool(kwargs.get("watermark", False)),
             "return_last_frame": True,
         }
     has_video_reference = any((it or {}).get("type") == "video_url" for it in content_list if isinstance(it, dict))
