@@ -30,6 +30,49 @@ try:
 except ImportError:
     CV2_AVAILABLE = False
 
+try:
+    from PIL import Image as PILImage
+    import io as _io
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+
+# Max image file size for Seedance 2.0 API (official limit: 30MB, safety margin for base64 overhead)
+MAX_IMAGE_BYTES = 20 * 1024 * 1024  # 20MB
+
+
+def _auto_resize_image(file_obj, max_bytes=MAX_IMAGE_BYTES):
+    """If image exceeds max_bytes, resize it down. Returns (bytes, mime_type, was_resized)."""
+    raw = file_obj.getvalue()
+    mime = (getattr(file_obj, 'type', None) or "image/jpeg").split(";")[0].strip()
+    if len(raw) <= max_bytes:
+        return raw, mime, False
+    if not PIL_AVAILABLE:
+        return raw, mime, False
+    try:
+        img = PILImage.open(_io.BytesIO(raw))
+        if img.mode == 'RGBA':
+            img = img.convert('RGB')
+            mime = "image/jpeg"
+        quality = 85
+        scale = 0.9
+        for _ in range(10):
+            w, h = int(img.width * scale), int(img.height * scale)
+            resized = img.resize((w, h), PILImage.LANCZOS)
+            buf = _io.BytesIO()
+            fmt = "JPEG" if "jpeg" in mime or "jpg" in mime else "PNG"
+            resized.save(buf, format=fmt, quality=quality, optimize=True)
+            if buf.tell() <= max_bytes:
+                return buf.getvalue(), mime, True
+            scale *= 0.85
+            quality = max(60, quality - 5)
+        resized = img.resize((img.width // 3, img.height // 3), PILImage.LANCZOS)
+        buf = _io.BytesIO()
+        resized.save(buf, format="JPEG", quality=70, optimize=True)
+        return buf.getvalue(), "image/jpeg", True
+    except Exception:
+        return raw, mime, False
+
 # ──────────────────────────────────────────────
 # CONFIGURATION
 # ──────────────────────────────────────────────
@@ -60,10 +103,9 @@ def _session_for_ark():
     return s
 
 # 3. MODELS (full IDs from ModelArk console - Asia Pacific / Johor)
-# Seedance 1.5 Pro: 480P/720P/1080P, 4–12s, 24fps, text+image only, first/last frame
-SEEDANCE_1_5_MODEL_ID = "seedance-1-5-pro-251215"  # ByteDance-Seedance-1.5-pro
 # Seedance 2.0: multimodal (text, images, videos, audio), 4–15s, 480P–2K, Video Extension/Editing
 SEEDANCE_2_0_MODEL_ID = os.getenv("SEEDANCE_2_MODEL_ID", "dreamina-seedance-2-0-260128")
+SEEDANCE_2_0_FAST_MODEL_ID = "dreamina-seedance-2-0-fast-260128"
 SEEDANCE_2_MODEL_ID = SEEDANCE_2_0_MODEL_ID  # Alias for backward compat
 SEEDREAM_4_5_MODEL_ID = "seedream-4-5-251128"     # ByteDance-Seedream-4.5
 # ByteDance-Seedream-5.0-lite (260128): text, single/multi-image, image sets.
@@ -108,36 +150,8 @@ def estimate_cost(model_id, resolution="720p", duration=5, generate_audio=False,
         res_cost = {"3K": 0.14, "2K": 0.07, "1K": 0.035, "4K": 0.14}
         return round(res_cost.get(resolution, 0.035), 4)
 
-    # ── Video token base: (W × H × FPS × Duration) / 1024 ──
-    # Pixel dimensions per resolution (16:9 base; other ratios have similar total pixels)
-    px = {"1080p": (1920, 1080), "720p": (1280, 720), "480p": (854, 480), "2K": (1920, 1080)}
-    w, h = px.get(resolution, (1280, 720))
-    fps = 24
-    tokens = (w * h * fps * duration) / 1024
-
-    is_1_5 = "1.5" in str(model_id) or "1-5" in str(model_id) or "1_5" in str(model_id)
-
-    if is_1_5:
-        # Seedance 1.5 Pro pricing
-        if is_draft:
-            # Draft: forced 480p, reduced coefficient
-            w_d, h_d = 854, 480
-            tokens = (w_d * h_d * fps * duration) / 1024
-            if generate_audio:
-                tokens *= 0.6  # coefficient with audio
-                rate = 2.4  # $/M tokens
-            else:
-                tokens *= 0.7  # coefficient without audio
-                rate = 1.2
-        elif is_offline:
-            rate = 1.2 if generate_audio else 0.6  # 50% of online
-        else:
-            rate = 2.4 if generate_audio else 1.2  # online standard
-        cost = (tokens / 1_000_000) * rate
-
-    else:
-        usage = _estimate_seedance2_usage(duration=duration, resolution=resolution, has_video_input=has_video_input)
-        cost = usage["estimated_cost"]
+    usage = _estimate_seedance2_usage(duration=duration, resolution=resolution, has_video_input=has_video_input)
+    cost = usage["estimated_cost"]
 
     # Add LLM prompt refinement cost (~$0.0005)
     cost += 0.0005
@@ -153,7 +167,6 @@ def format_cost_str(cost):
 
 COST_PER_SEC = {
     "seedance-2": {"with_video_input": 0.0043, "without_video_input": 0.0070},  # $ / 1K tokens
-    "seedance-1-5": {"Online": 0.040, "Offline": 0.040},
 }
 COST_SEEDREAM_PER_IMAGE = 0.040
 COST_SEED18_INPUT_PER_TOKEN = 0.000001
@@ -244,8 +257,8 @@ def save_video_with_metadata(video_url, prompt_text, scene_description, resoluti
                 f.write(f"Estimated cost (pay-as-you-go): ${usage['estimated_cost']:.4f}\n")
                 f.write(f"Input type: {'With video reference' if usage['has_video_input'] else 'Text/Image only'}\n")
             else:
-                _est = estimate_cost(model_id, resolution, duration, generate_audio, is_draft, is_offline)
-                f.write(f"Estimated Cost: {format_cost_str(_est)}\n")
+                # Non-Seedance-2 fallback (unexpected model id for video)
+                pass
     except Exception as e:
         pass  # Info file is optional
     
@@ -318,22 +331,8 @@ def upload_file_to_byteplus(streamlit_file):
         return None
 
 # ──────────────────────────────────────────────
-# 1. VIDEO GENERATION (SEEDANCE 1.5 / 2.0) — JSON strict validation
+# 1. VIDEO GENERATION (SEEDANCE 2.0) — JSON strict validation
 # ──────────────────────────────────────────────
-def _has_camera_movement(shots_data):
-    """True if any shot has explicit camera movement (m1_type or m2_type). Used to set camera_fixed."""
-    if not shots_data:
-        return False
-    for shot in shots_data:
-        m1 = (shot.get("m1_type") or "").strip().lower()
-        m2 = (shot.get("m2_type") or "").strip().lower()
-        if m1 and m1 not in ("not specified", "static", ""):
-            return True
-        if m2 and m2 not in ("not specified", "static", ""):
-            return True
-    return False
-
-
 def _estimate_cost(model, duration=None, resolution=None,
                    service_tier="Online", input_tokens=0, output_tokens=0):
     cost = 0.0
@@ -347,11 +346,6 @@ def _estimate_cost(model, duration=None, resolution=None,
         cost += base
         mode_lbl = "with video input" if has_video_input else "without video input"
         breakdown.append(f"Seedance 2.0 {duration}s {resolution} ({mode_lbl}): ${base:.4f}, tokens={usage['tokens_consumed']}, pack={usage['tokens_deducted']}")
-    elif "seedance-1-5" in m:
-        rate = COST_PER_SEC["seedance-1-5"]["Online"]
-        base = rate * (duration or 10)
-        cost += base
-        breakdown.append(f"Seedance 1.5 {duration}s {resolution}: ${base:.4f}")
     elif "seedream" in m:
         cost += COST_SEEDREAM_PER_IMAGE
         breakdown.append(f"Seedream image: ${COST_SEEDREAM_PER_IMAGE:.4f}")
@@ -399,69 +393,63 @@ def generate_video(prompt_text, scene_description, images=[], videos=[], audios=
     content_list = [{"type": "text", "text": clean_prompt}]
     
     model = model_id or SEEDANCE_2_MODEL_ID
-    is_1_5 = (model == SEEDANCE_1_5_MODEL_ID)
-    res_normalized = (resolution or "1080p").strip().lower()
 
     is_first_last_mode = kwargs.get("image_usage") == "first_last_frame"
     if is_first_last_mode:
         # First+Last frame: exactly 2 images, regardless of model or resolution
         image_files = (images or [])[:2]
-    elif is_1_5 and res_normalized == "1080p":
-        image_files = (images or [])[:1]
     else:
         image_files = (images or [])[:9]
 
-    # Images: use inline base64 (1.5 and 2.0 both need base64; 1.5 supports first/last frame)
+    # Images: use inline base64 (Seedance 2.0)
     for i, file in enumerate(image_files):
         try:
-            b64 = base64.b64encode(file.getvalue()).decode("utf-8")
-            mime = (file.type or "image/jpeg").split(";")[0].strip()
+            raw_bytes, mime, was_resized = _auto_resize_image(file)
+            b64 = base64.b64encode(raw_bytes).decode("utf-8")
             item = {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
-            if not is_1_5:
-                if is_first_last_mode:
-                    item["role"] = "first_frame" if i == 0 else "last_frame"
-                elif i == 0 and kwargs.get("image_usage") in ("first_frame", "auto") and len(image_files) == 1:
-                    item["role"] = "first_frame"
-                else:
-                    item["role"] = "reference_image"
+            if is_first_last_mode:
+                item["role"] = "first_frame" if i == 0 else "last_frame"
+            elif i == 0 and kwargs.get("image_usage") in ("first_frame", "auto") and len(image_files) == 1:
+                item["role"] = "first_frame"
+            else:
+                item["role"] = "reference_image"
             content_list.append(item)
         except Exception:
             pass
-    # Videos/Audio: Seedance 1.5 is Text-to-video + Image-to-video ONLY — no video/audio input
-    if not is_1_5:
-        for file in (videos or [])[:3]:
+    # Videos/Audio: Seedance 2.0 multimodal inputs
+    for file in (videos or [])[:3]:
+        out = upload_file_to_byteplus(file)
+        if out:
+            fid, url = out if isinstance(out, tuple) else (out, f"{FILE_UPLOAD_URL}/{out}")
+            if url:
+                content_list.append({"type": "video_url", "video_url": {"url": url}, "role": "reference_video"})
+    if generate_audio:
+        for file in (audios or [])[:3]:
             out = upload_file_to_byteplus(file)
             if out:
                 fid, url = out if isinstance(out, tuple) else (out, f"{FILE_UPLOAD_URL}/{out}")
                 if url:
-                    content_list.append({"type": "video_url", "video_url": {"url": url}, "role": "reference_video"})
-        if generate_audio:
-            for file in (audios or [])[:3]:
-                out = upload_file_to_byteplus(file)
-                if out:
-                    fid, url = out if isinstance(out, tuple) else (out, f"{FILE_UPLOAD_URL}/{out}")
-                    if url:
-                        content_list.append({"type": "audio_url", "audio_url": {"url": url}, "role": "reference_audio"})
+                    content_list.append({"type": "audio_url", "audio_url": {"url": url}, "role": "reference_audio"})
+
+    # Validate total mixed input files (max 12 for Seedance 2.0)
+    _file_count = sum(1 for it in content_list if isinstance(it, dict) and it.get("type") in ("image_url", "video_url", "audio_url"))
+    if _file_count > 12:
+        return f"Too many input files ({_file_count}). Seedance 2.0 allows max 12 mixed files (images + videos + audios)."
 
     try:
         seed_int = int(seed) if seed and str(seed).strip() != "-1" else None
     except (ValueError, TypeError):
         seed_int = None
 
-    # Duration: -1 = autonomous (API chooses 4–12s for 1.5); otherwise clamp to model range
+    # Duration: -1 = smart/autonomous; otherwise clamp to Seedance 2.0 range (4–15s)
     try:
         duration_int = int(duration)
     except (ValueError, TypeError):
         duration_int = 8
     if duration_int != -1:
-        if model == SEEDANCE_1_5_MODEL_ID and (duration_int < 4 or duration_int > 12):
-            duration_int = max(4, min(12, duration_int))
-        elif model != SEEDANCE_1_5_MODEL_ID and (duration_int < 4 or duration_int > 15):
+        if duration_int < 4 or duration_int > 15:
             duration_int = max(4, min(15, duration_int))
 
-    # camera_fixed: from explicit arg, or from shots_data (has movement → camera_fixed=False)
-    if camera_fixed is None and is_1_5 and shots_data:
-        camera_fixed = not _has_camera_movement(shots_data)
     if camera_fixed is None:
         camera_fixed = False
 
@@ -470,32 +458,20 @@ def generate_video(prompt_text, scene_description, images=[], videos=[], audios=
     if is_draft:
         service_tier = "Online"
 
-    if is_1_5:
-        payload = {
-            "model": model,
-            "content": content_list,
-            "seed": seed_int,
-            "resolution": "480p" if is_draft else resolution,
-            "ratio": aspect_ratio,
-            "duration": duration_int,
-            "camera_fixed": bool(camera_fixed),
-            "generate_audio": bool(generate_audio),
-        }
-        # 1080p: disable Adaptive Aspect Ratio per production rules
-        if res_normalized == "1080p":
-            payload["adaptive_aspect_ratio"] = False
-    else:
-        payload = {
-            "model": model,
-            "content": content_list,
-            "resolution": resolution,
-            "ratio": aspect_ratio,
-            "duration": duration_int,
-            "seed": seed_int if seed_int is not None else -1,
-            "generate_audio": bool(generate_audio),
-            "watermark": bool(kwargs.get("watermark", False)),
-            "return_last_frame": True,
-        }
+    payload = {
+        "model": model,
+        "content": content_list,
+        "resolution": "480p" if is_draft else resolution,
+        "ratio": aspect_ratio,
+        "duration": duration_int,
+        "seed": seed_int if seed_int is not None else -1,
+        "generate_audio": bool(generate_audio),
+        "watermark": bool(kwargs.get("watermark", False)),
+        "return_last_frame": True,
+    }
+    # Offline inference: 50% cost via flex tier
+    if is_offline:
+        payload["service_tier"] = "flex"
     has_video_reference = any((it or {}).get("type") == "video_url" for it in content_list if isinstance(it, dict))
 
     try:

@@ -1,10 +1,10 @@
 # ──────────────────────────────────────────────
-# BUILDER.PY — Prompt Builder for Seedance 1.5 / 2.0 / Seedream 5.0
+# BUILDER.PY — Prompt Builder for Seedance 2.0 (video) + Seedream 5.0 (image)
 # Architecture:
-#   - Model-specific system prompts (_system_prompt_seedance_1_5, _system_prompt_seedance_2_0)
+#   - Single system prompt per modality (_system_prompt_seedance_2_0, image prompt below)
 #   - Shared utilities (clean_param, _expand_cinematic, _truncate_prompt)
-#   - Shared timeline formatting (_format_timeline with model-specific branches)
-#   - Separate builders: build_prompt() for video, build_image_prompt() for images
+#   - Timestamped timeline formatting (_format_timeline) — Seedance 2.0 Directorial Formula
+#   - Builders: build_prompt() for video, build_image_prompt() for images
 # Based on official ByteDance documentation (Feb 2026)
 # ──────────────────────────────────────────────
 import os
@@ -25,12 +25,12 @@ except ImportError:
     warnings.warn("builder_cinematic_dict not found. Parameter expansion disabled.")
 
 # Model IDs and endpoints
-SEED_1_8_ID = "seed-1-8-251228"  # From working backup (Seed 1.8 + Seedance 1.5)
+SEED_1_8_ID = "seed-1-8-251228"  # Seed 1.8 — LLM / vision for prompt refinement
 SEED_2_0_MINI_ID = "seed-2-0-mini-260215"  # ByteDance-Seed-2.0-mini (when available)
 LLM_ENDPOINT_ID = SEED_1_8_ID  # Seed 2.0 mini not yet active; use Seed 1.8 for prompt generation
 VISION_MODEL_ID = SEED_1_8_ID  # Keep Seed 1.8 for vision analysis (Seed 2.0 mini may not support vision endpoint)
 
-# URL from working backup (Seed 1.8 + Seedance 1.5) - override with ARK_LLM_URL if needed
+# LLM endpoint — override with ARK_LLM_URL if needed
 LLM_API_URL = os.getenv("ARK_LLM_URL", "https://ark.ap-southeast.bytepluses.com/api/v3/chat/completions")
 
 
@@ -59,7 +59,7 @@ def _expand_cinematic(val):
 def _truncate_prompt(text, max_words=500):
     """Truncate prompt to max_words to avoid quality degradation.
     Seedream 5.0: official limit 600 words (we use 500 for safety margin).
-    Seedance 1.5/2.0: no official limit, but >500 words degrades quality.
+    Seedance 2.0: no official limit, but >500 words degrades quality.
     Truncates at the last complete sentence before the limit."""
     if not text or not text.strip():
         return text
@@ -288,59 +288,17 @@ def _translate_tones(shot):
     return ". ".join(parts).strip() + "."
 
 
-def _official_camera_term(movement_type):
+def _format_timeline(shots_data):
     """
-    Maps UI movement choices to ByteDance official trigger words for Seedance 1.5.
-    Returns None if movement is static (LLM must not mention camera movement).
-    Uses CINEMATIC_DICTIONARY first for full-sentence expansion, then falls back
-    to curated short labels if no dictionary entry exists.
-    """
-    if not movement_type:
-        return None
-    key = str(movement_type).strip()
-    m = key.lower()
-    if not m or m in ("static", "not specified", "none"):
-        return None
-
-    # 1. Try full expansion from CINEMATIC_DICTIONARY (parameter expansion)
-    expanded = CINEMATIC_DICTIONARY.get(key)
-    if expanded:
-        return expanded
-
-    # 2. Fallback: curated Seedance 1.5 camera vocabulary
-    if "orbit" in m or "360" in m:
-        return "360-degree orbiting shot"
-    if "pan" in m:
-        return "Rapid panning"
-    if "dolly" in m and "zoom" in m:
-        return "Dolly zoom"
-    if "vertigo" in m:
-        return "Dolly zoom"
-    if "dolly" in m and "out" in m:
-        return "Dolly out"
-    if "dolly" in m:
-        return "Dolly in"
-    if "truck" in m or "tracking" in m:
-        return "Tracking shot"
-    if "crane" in m:
-        return "Crane shot"
-    if "handheld" in m:
-        return "Handheld"
-    return key  # fallback: pass through original label
-
-
-def _format_timeline(shots_data, for_seedance_1_5=False):
-    """
-    Builds script from shots_data for the LLM.
-    - If for_seedance_1_5=True: NO timestamps (no [0s-8s]). Fluid sentences only; camera terms use ByteDance official vocabulary.
-    - If for_seedance_1_5=False: rigid timestamped format [0s-4s]: Primary action... for Seedance 2.0.
+    Builds script from shots_data for the LLM (Seedance 2.0).
+    Rigid timestamped format: Ns-Ms: Primary action... with parameter expansion (CINEMATIC_DICTIONARY).
     """
     lines = []
-    for idx, shot in enumerate(shots_data):
+    for shot in shots_data:
         m1_start = shot.get('m1_start', 0)
         m1_end = shot.get('m1_end', 4)
         m1_type_raw = clean_param(shot.get('m1_type')) or "static"
-        m1_type = _official_camera_term(m1_type_raw) if for_seedance_1_5 else (m1_type_raw or "static")
+        m1_type = m1_type_raw or "static"
         m1_pace_raw = clean_param(shot.get('m1_pace')) or "Normal"
         m1_pace_exp = _expand_cinematic(m1_pace_raw) if m1_pace_raw and m1_pace_raw.lower() != "not specified" else _expand_cinematic("Normal") or "Normal"
         m1_angle = clean_param(shot.get('m1_angle')) or "eye-level"
@@ -350,116 +308,60 @@ def _format_timeline(shots_data, for_seedance_1_5=False):
         lighting = clean_param(shot.get('lighting')) or ""
         tone_desc = _translate_tones(shot)
         extra = []
-        if style: extra.append(f"Style: {style}")
-        if mood: extra.append(f"Mood: {mood}")
-        if lighting: extra.append(f"Lighting: {lighting}")
+        if style:
+            extra.append(f"Style: {style}")
+        if mood:
+            extra.append(f"Mood: {mood}")
+        if lighting:
+            extra.append(f"Lighting: {lighting}")
         extra_str = ". ".join(extra) + "." if extra else ""
 
-        if for_seedance_1_5:
-            # Seedance 1.5: cinematic prose, NO timestamps.
-            # Official ByteDance format: "The shot starts with... The shot cuts to..."
-            m1_angle_exp = _expand_cinematic(m1_angle) or m1_angle
-            style_exp = _expand_cinematic(style) if style else None
-            mood_exp = _expand_cinematic(mood) if mood else None
-            lighting_exp = _expand_cinematic(lighting) if lighting else None
+        m1_type_exp = _expand_cinematic(m1_type) or m1_type
+        m1_angle_exp = _expand_cinematic(m1_angle) or m1_angle
+        style_exp = _expand_cinematic(style) or style
+        mood_exp = _expand_cinematic(mood) or mood
+        lighting_exp = _expand_cinematic(lighting) or lighting
+        extra_2_0 = []
+        if style_exp:
+            extra_2_0.append(f"Style: {style_exp}")
+        if mood_exp:
+            extra_2_0.append(f"Mood: {mood_exp}")
+        if lighting_exp:
+            extra_2_0.append(f"Lighting: {lighting_exp}")
+        extra_str_2_0 = ". ".join(extra_2_0) + "." if extra_2_0 else extra_str
+        line = f"{int(m1_start)}s-{int(m1_end)}s: Primary action with {m1_type_exp} camera movement. {m1_pace_exp}. Angle: {m1_angle_exp}. Target: {assets}."
+        if tone_desc:
+            line += f" Visual tone: {tone_desc}"
+        if extra_str_2_0:
+            line += f" {extra_str_2_0}"
 
-            # Build shot description in cinematic transition language
-            shot_parts = []
-            if idx == 0:
-                shot_parts.append(f"The shot starts with {assets}.")
-            else:
-                shot_parts.append(f"The shot cuts to {assets}.")
+        atmos = clean_param(shot.get("vfx_atmos"))
+        vfx = clean_param(shot.get("vfx_effects"))
+        if atmos:
+            line += f" Atmosphere: {atmos}."
+        if vfx:
+            line += f" VFX: {vfx}."
 
-            if m1_type:
-                shot_parts.append(f"Camera: {m1_type}, {m1_pace_exp} pace, from {m1_angle_exp}.")
-            else:
-                shot_parts.append(f"Static shot from {m1_angle_exp}.")
+        color_palette = shot.get("color_palette")
+        if color_palette and isinstance(color_palette, list) and len(color_palette) > 0:
+            color_parts = [f"{target} in {hex_val}" for hex_val, target in color_palette]
+            line += f" Color grading: {', '.join(color_parts)}."
+        lines.append(line)
 
-            if style_exp:
-                shot_parts.append(f"Style: {style_exp}.")
-            if mood_exp:
-                shot_parts.append(f"Mood: {mood_exp}.")
-            if lighting_exp:
-                shot_parts.append(f"Lighting: {lighting_exp}.")
-            if tone_desc:
-                shot_parts.append(f"Visual tone: {tone_desc}")
-
-            # Atmosphere & VFX
-            atmos = clean_param(shot.get("vfx_atmos"))
-            vfx = clean_param(shot.get("vfx_effects"))
-            if atmos:
-                shot_parts.append(f"Atmosphere: {atmos}.")
-            if vfx:
-                shot_parts.append(f"VFX: {vfx}.")
-
-            # Color grading
-            color_palette = shot.get("color_palette")
-            if color_palette and isinstance(color_palette, list) and len(color_palette) > 0:
-                color_parts = [f"{target} in {hex_val}" for hex_val, target in color_palette]
-                shot_parts.append(f"Color grading: {', '.join(color_parts)}.")
-
-            lines.append(" ".join(shot_parts))
-
-            # Secondary movement
-            m2_type_raw = clean_param(shot.get('m2_type'))
-            m2_type = _official_camera_term(m2_type_raw) if m2_type_raw else None
-            if m2_type:
-                m2_pace_raw = clean_param(shot.get('m2_pace')) or "Normal"
-                m2_pace_exp = _expand_cinematic(m2_pace_raw) or "Normal"
-                m2_angle_raw = clean_param(shot.get('m2_angle')) or "eye-level"
-                m2_angle_exp = _expand_cinematic(m2_angle_raw) or m2_angle_raw
-                m2_shot = clean_param(shot.get('m2_shot')) or ""
-                line2 = f"Then the camera transitions to {m2_type}, {m2_pace_exp} pace, from {m2_angle_exp}."
-                if m2_shot:
-                    line2 += f" {m2_shot}."
-                lines.append(line2)
-        else:
-            # Seedance 2.0: timestamped format + Parameter Expansion (CINEMATIC_DICTIONARY)
-            m1_type_exp = _expand_cinematic(m1_type) or m1_type
-            m1_angle_exp = _expand_cinematic(m1_angle) or m1_angle
-            style_exp = _expand_cinematic(style) or style
-            mood_exp = _expand_cinematic(mood) or mood
-            lighting_exp = _expand_cinematic(lighting) or lighting
-            extra_2_0 = []
-            if style_exp: extra_2_0.append(f"Style: {style_exp}")
-            if mood_exp: extra_2_0.append(f"Mood: {mood_exp}")
-            if lighting_exp: extra_2_0.append(f"Lighting: {lighting_exp}")
-            extra_str_2_0 = ". ".join(extra_2_0) + "." if extra_2_0 else extra_str
-            line = f"{int(m1_start)}s-{int(m1_end)}s: Primary action with {m1_type_exp} camera movement. {m1_pace_exp}. Angle: {m1_angle_exp}. Target: {assets}."
-            if tone_desc:
-                line += f" Visual tone: {tone_desc}"
-            if extra_str_2_0:
-                line += f" {extra_str_2_0}"
-
-            # Atmosphere & VFX
-            atmos = clean_param(shot.get("vfx_atmos"))
-            vfx = clean_param(shot.get("vfx_effects"))
-            if atmos:
-                line += f" Atmosphere: {atmos}."
-            if vfx:
-                line += f" VFX: {vfx}."
-
-            # Color grading
-            color_palette = shot.get("color_palette")
-            if color_palette and isinstance(color_palette, list) and len(color_palette) > 0:
-                color_parts = [f"{target} in {hex_val}" for hex_val, target in color_palette]
-                line += f" Color grading: {', '.join(color_parts)}."
-            lines.append(line)
-
-            m2_type_raw = clean_param(shot.get('m2_type'))
-            m2_type_exp = _expand_cinematic(m2_type_raw) or m2_type_raw if m2_type_raw else None
-            if m2_type_exp:
-                m2_start = shot.get('m2_start', m1_end)
-                m2_end = shot.get('m2_end', m2_start + 4)
-                m2_pace_raw = clean_param(shot.get('m2_pace')) or "Normal"
-                m2_pace_exp = _expand_cinematic(m2_pace_raw) if m2_pace_raw and m2_pace_raw.lower() != "not specified" else _expand_cinematic("Normal") or "Normal"
-                m2_angle_raw = clean_param(shot.get('m2_angle')) or "eye-level"
-                m2_angle_exp = _expand_cinematic(m2_angle_raw) or m2_angle_raw
-                m2_shot = clean_param(shot.get('m2_shot')) or ""
-                line2 = f"{int(m2_start)}s-{int(m2_end)}s: Secondary action with {m2_type_exp} camera movement. {m2_pace_exp}. Angle: {m2_angle_exp}."
-                if m2_shot:
-                    line2 += f" Context: {m2_shot}."
-                lines.append(line2)
+        m2_type_raw = clean_param(shot.get('m2_type'))
+        m2_type_exp = _expand_cinematic(m2_type_raw) or m2_type_raw if m2_type_raw else None
+        if m2_type_exp:
+            m2_start = shot.get('m2_start', m1_end)
+            m2_end = shot.get('m2_end', m2_start + 4)
+            m2_pace_raw = clean_param(shot.get('m2_pace')) or "Normal"
+            m2_pace_exp = _expand_cinematic(m2_pace_raw) if m2_pace_raw and m2_pace_raw.lower() != "not specified" else _expand_cinematic("Normal") or "Normal"
+            m2_angle_raw = clean_param(shot.get('m2_angle')) or "eye-level"
+            m2_angle_exp = _expand_cinematic(m2_angle_raw) or m2_angle_raw
+            m2_shot = clean_param(shot.get('m2_shot')) or ""
+            line2 = f"{int(m2_start)}s-{int(m2_end)}s: Secondary action with {m2_type_exp} camera movement. {m2_pace_exp}. Angle: {m2_angle_exp}."
+            if m2_shot:
+                line2 += f" Context: {m2_shot}."
+            lines.append(line2)
 
     return "\n".join(lines) if lines else ""
 
@@ -499,9 +401,10 @@ def _get_workflow_system_instruction(workflow_type, image_usage, num_vids, num_i
         )
     if image_usage == "composite" and num_imgs >= 2:
         return (
-            "Combine subject from one image and environment from another. Use strict composite phrasing: "
-            "'The character (referenced from @Image 1) is located in the environment (referenced from @Image 2).' "
-            "Then add motion and action within that composite scene."
+            "Multiple reference images are available. Use each @Image tag ONLY for the purpose "
+            "the draft assigns it. If the draft specifies @Image 1 as a diver and @Image 2 as crates, "
+            "respect that — do NOT force a character+environment composite formula. "
+            "Use attribute locking phrasing: '(referenced from @Image X)' for each tag's role."
         )
     return (
         "Standard generation. Use @ tags to state how each asset is used (reference, first frame, etc.) "
@@ -635,35 +538,6 @@ def call_llm_for_prompt(system_instruction, user_content, temperature=0.5, model
 # MODEL-SPECIFIC SYSTEM PROMPTS (based on official ByteDance guides)
 # ──────────────────────────────────────────────
 
-def _system_prompt_seedance_1_5(workflow_instruction, has_audio_sync, creative_rule):
-    """Simplified system prompt for Seedance 1.5 Pro — refine a pre-formatted draft."""
-
-    audio_rule = (
-        "Keep the Audio & Sound Cues section exactly as written in the draft."
-        if has_audio_sync
-        else "Do NOT add any Audio & Sound Cues section. Do NOT invent sounds, music, or @Audio tags. If the draft has no audio section, your output must have none."
-    )
-
-    return f"""You are a Senior Director polishing a pre-formatted draft for the Seedance 1.5 Pro video engine.
-
-TASK: Refine the draft below into ONE fluid cinematic paragraph. TARGET: 60-150 words.
-
-RULES:
-1. Keep ALL camera trigger words exactly as written (dolly-in, Pan, Track, etc.) — do not expand or replace them.
-2. Keep ALL @ tags exactly as written (@Image 1, @Video 1, @Audio 1).
-3. Audio section: keep the "Audio & Sound Cues:" format exactly as in the draft. Do NOT convert it to @Audio tags. Do NOT invent @Audio references.
-4. Weave the technical terms into natural prose using degree adverbs (slowly, forcefully, gently).
-5. Follow this order: Subject → Movement → Environment → Camera → Atmosphere/Lighting → Audio.
-6. For multi-shot: use "The shot starts with..." / "The shot cuts to..." transitions.
-7. {audio_rule}
-8. Do NOT add details the user did not specify. Do NOT describe default/neutral values.
-9. {creative_rule if creative_rule else 'Stay faithful to the draft — refine, do not reinvent.'}
-
-{workflow_instruction}
-
-Output ONLY the final prompt. No explanations. No markdown. English only."""
-
-
 def _system_prompt_seedance_2_0(workflow_instruction, creative_rule):
     """Slim system prompt for Seedance 2.0 — refine a pre-formatted draft."""
 
@@ -673,15 +547,19 @@ TASK: Refine the draft below into fluid cinematic prose. TARGET: 60-200 words.
 
 RULES:
 1. Keep ALL @ tags exactly as written (@Image 1, @Video 1, @Audio 1) — never remove, rename, or translate them.
-2. Keep ALL timestamps exactly as written (0s-5s:, 5s-10s:) — never shift or merge them.
-3. Keep attribute locking phrasing intact: "The character (physical attributes and clothing referenced from @Image X)".
-4. Keep ALL camera trigger words exactly as written (dolly-in, Pan, Track, etc.).
-5. Keep "Constraints:" tail exactly as written at the end.
-6. Keep "Audio & Sound Cues:" section exactly as written.
-7. Weave technical terms into natural directorial prose — as a director would describe a shot to a DP.
-8. Do NOT add details the user did not specify. Do NOT describe default/neutral values.
-9. Do NOT add any @ tags that are not already in the draft.
-10. {creative_rule if creative_rule else 'Stay faithful to the draft — refine, do not reinvent.'}
+2. NEVER renumber @ tags. If the draft says @Image 2, your output MUST say @Image 2 — not @Image 1. Tag numbers map to specific uploaded files and MUST be preserved exactly.
+3. Keep ALL timestamps exactly as written (0s-5s:, 5s-10s:) — never shift or merge them. Each timestamp block must describe ONE distinct shot or angle.
+4. Keep attribute locking phrasing intact: "The character (physical attributes and clothing referenced from @Image X)".
+5. Keep ALL camera trigger words exactly as written (dolly-in, Pan, Track, etc.).
+6. Keep "Constraints:" tail exactly as written at the end.
+7. Keep "Audio & Sound Cues:" section exactly as written.
+8. Weave technical terms into natural directorial prose — as a director would describe a shot to a DP.
+9. Do NOT add details the user did not specify. Do NOT describe default/neutral values.
+10. Do NOT add any @ tags that are not already in the draft.
+11. Each @Image tag must be used ONLY for the role the draft assigns it. If the draft says @Image 1 is a diver reference, do NOT also use @Image 1 as an environment or backdrop.
+12. Correct obvious cinematography terminology: POW → POV (point of view), soggettiva → subjective POV shot, campo lungo → wide shot, primo piano → close-up, piano americano → American shot.
+13. Do NOT repeat identical tone/look descriptions across multiple timestamp blocks. State visual tone once in the first block; subsequent blocks inherit it unless explicitly changed.
+14. {creative_rule if creative_rule else 'Stay faithful to the draft — refine, do not reinvent.'}
 
 {workflow_instruction}
 
@@ -691,282 +569,6 @@ Output ONLY the final prompt. No explanations. No markdown. English only."""
 # ──────────────────────────────────────────────
 # DIRECTOR AGENT (PROMPT BUILDER)
 # ──────────────────────────────────────────────
-
-def _camera_short_label_1_5(movement_type):
-    """Returns ONLY the short ByteDance official camera trigger word for Seedance 1.5.
-    Unlike _official_camera_term(), this NEVER uses CINEMATIC_DICTIONARY expansions.
-    Returns None if static/empty."""
-    if not movement_type:
-        return None
-    m = str(movement_type).strip().lower()
-    if not m or m in ("static", "not specified", "none"):
-        return None
-    # Map UI labels to short official Seedance 1.5 trigger words
-    LABEL_MAP = {
-        "dolly-in": "dolly-in", "dolly in": "dolly-in",
-        "dolly-out": "dolly-out", "dolly out": "dolly-out",
-        "pan": "pan", "track": "tracking shot",
-        "follow (behind)": "follow", "lead (ahead)": "lead",
-        "rise (crane up)": "crane-up shot", "fall (crane down)": "crane-down shot",
-        "whirl": "whirl", "rotate": "rotate",
-        "surround (orbit)": "orbiting shot", "zoom": "zoom",
-        "hitchcock zoom": "dolly zoom", "bullet time": "bullet time",
-    }
-    return LABEL_MAP.get(m, str(movement_type).strip())
-
-
-def _pre_format_seedance_1_5(scene_description, shots_data, num_imgs, num_vids, num_auds,
-                              audio_sync, vision_context, image_usage, workflow_type, duration):
-    """
-    Seedance 1.5 pre-formatter.
-    Builds a draft in Seedance 1.5 prose grammar (sent to Seed 1.8 for polishing).
-    """
-    # ── 1. SECTION 1: PREAMBLE (first, conditional) ──
-    preamble = ""
-    if workflow_type == "Video Extension" and num_vids > 0:
-        dur_sec = int(duration) if duration is not None else 5
-        preamble = f"Extend @Video 1 by {dur_sec}s."
-    elif image_usage == "first_frame" and num_imgs > 0:
-        preamble = "Starting from the exact composition in @Image 1,"
-    elif image_usage == "first_last_frame" and num_imgs >= 2:
-        preamble = "Starting from @Image 1, the scene evolves toward the composition in @Image 2."
-    elif image_usage == "reference_only" and num_imgs > 0:
-        img_refs = ", ".join([f"@Image {i+1}" for i in range(num_imgs)])
-        preamble = f"Using {img_refs} as visual reference,"
-    elif image_usage == "composite" and num_imgs >= 2:
-        preamble = "The character (physical attributes referenced from @Image 1) is located within the environment (referenced from @Image 2)."
-    elif workflow_type == "Video Editing" and num_vids > 0 and num_imgs > 0:
-        preamble = "Replace the character in @Video 1 with the figure from @Image 1."
-
-    preamble_exists = bool(preamble)
-
-    sections = []
-    if preamble_exists:
-        sections.append(preamble)
-
-    # ── 5. SECTION 5: VISION CONTEXT (after preamble) ──
-    vision_lines = []
-    if vision_context and num_imgs > 0:
-        for i, desc in enumerate(vision_context):
-            desc_val = clean_param(desc)
-            if desc_val:
-                vision_lines.append(f"@Image {i+1} shows: {desc_val}")
-    if vision_lines:
-        sections.extend(vision_lines)
-
-    # ── 3. SECTION 3: SCENE DESCRIPTION DEDUP / INSERT ──
-    scene_desc_val = clean_param(scene_description)
-    if not shots_data:
-        if scene_desc_val:
-            sections.append(scene_desc_val.strip())
-    else:
-        # Exception: only when shot 0 has explicit assets text differing from scene_description.
-        first_assets_raw = clean_param((shots_data[0] if shots_data else {}).get("assets"))
-        if scene_desc_val and first_assets_raw and scene_desc_val.lower() != first_assets_raw.lower():
-            sections.append(scene_desc_val.strip())
-
-    # ── 2. SECTION 2: SHOTS (one block per shot) ──
-    shot_blocks = []
-    for idx, shot in enumerate(shots_data or []):
-        parts = []
-
-        # R2.A5: ASSETS resolution
-        assets_raw = clean_param(shot.get("assets"))
-        if assets_raw:
-            assets = assets_raw
-        elif idx == 0 and scene_desc_val:
-            sd = scene_desc_val.strip()
-            assets = sd[0].lower() + sd[1:] if len(sd) > 1 else sd.lower()
-        elif idx > 0:
-            assets = "the same scene"
-        else:
-            assets = "the scene"
-
-        # R2.A6: SHOT_TYPE
-        shot_type = clean_param(shot.get("shot_type"))
-        shot_type_str = f"{shot_type.lower()} of " if shot_type else ""
-
-        # R2.A4: ARTICLE rule
-        if shot_type:
-            st_lower = shot_type.lower()
-            article = "an" if st_lower[0] in "aeiou" else "a"
-        else:
-            article = "a"
-
-        # R2.A1-A3: SUBJECT line
-        if idx == 0 and preamble_exists:
-            if shot_type:
-                parts.append(f"{article.capitalize()} {shot_type_str}{assets}.")
-            else:
-                cap_assets = assets[0].upper() + assets[1:] if assets else "The scene"
-                parts.append(f"{cap_assets}.")
-        elif idx == 0:
-            if shot_type:
-                parts.append(f"The shot starts with {article} {shot_type_str}{assets}.")
-            else:
-                parts.append(f"The shot starts with {assets}.")
-        else:
-            if shot_type:
-                parts.append(f"The shot cuts to {article} {shot_type_str}{assets}.")
-            else:
-                parts.append(f"The shot cuts to {assets}.")
-
-        # R2.B: CAMERA line
-        m1_type_raw = clean_param(shot.get("m1_type"))
-        m1_pace_raw = clean_param(shot.get("m1_pace"))
-        m1_angle_raw = clean_param(shot.get("m1_angle"))
-
-        movement_exists = bool(m1_type_raw) and m1_type_raw.lower() not in ("static", "not specified", "none")
-
-        angle_is_nondefault = bool(m1_angle_raw) and m1_angle_raw.lower() not in ("eye-level", "not specified")
-        pace_is_nondefault = bool(m1_pace_raw) and m1_pace_raw.lower() != "normal"
-
-        if movement_exists:
-            cam_term = _camera_short_label_1_5(m1_type_raw)
-
-            pace_adverb = ""
-            if m1_pace_raw:
-                pace_map = {
-                    "Extremely Slow": "very slowly",
-                    "Slow": "slowly",
-                    "Normal": "",
-                    "Fast": "rapidly",
-                    "Dynamic": "dynamically",
-                    "Time-lapse": "in time-lapse",
-                }
-                pace_map_lower = {k.lower(): v for k, v in pace_map.items()}
-                pace_adverb = pace_map_lower.get(m1_pace_raw.lower(), "")
-
-            angle_suffix = f" from a {m1_angle_raw.lower()}" if angle_is_nondefault else ""
-
-            if pace_adverb == "in time-lapse":
-                parts.append(f"The camera {cam_term}{angle_suffix}, in time-lapse.")
-            elif pace_adverb:
-                parts.append(f"The camera {pace_adverb} {cam_term}{angle_suffix}.")
-            else:
-                parts.append(f"The camera {cam_term}{angle_suffix}.")
-
-        elif pace_is_nondefault:
-            pace_map_static = {
-                "time-lapse": "The scene unfolds in time-lapse.",
-                "extremely slow": "The scene evolves very slowly.",
-                "slow": "The scene unfolds slowly.",
-                "fast": "The scene moves rapidly.",
-                "dynamic": "The scene shifts dynamically.",
-            }
-            pace_line = pace_map_static.get(m1_pace_raw.lower(), f"Pace: {m1_pace_raw}.")
-            if angle_is_nondefault:
-                parts.append(pace_line + f" Shot from a {m1_angle_raw.lower()}.")
-            else:
-                parts.append(pace_line)
-
-        elif angle_is_nondefault:
-            # STATE C (Static + default pace + non-default angle)
-            parts.append(f"Static shot from a {m1_angle_raw.lower()}.")
-
-        # R2.C: ATMOSPHERE line
-        style_raw = clean_param(shot.get("style"))
-        mood_raw = clean_param(shot.get("mood"))
-        lighting_raw = clean_param(shot.get("lighting"))
-        lighting_dir_raw = clean_param(shot.get("lighting_direction"))
-        lighting_src_raw = clean_param(shot.get("lighting_source"))
-
-        atmos_parts = []
-        if lighting_raw and lighting_dir_raw:
-            atmos_parts.append(f"{lighting_raw.lower()} with {lighting_dir_raw.lower()}")
-        elif lighting_raw:
-            atmos_parts.append(lighting_raw.lower())
-        elif lighting_dir_raw:
-            atmos_parts.append(lighting_dir_raw.lower())
-
-        if lighting_src_raw:
-            atmos_parts.append(f"{lighting_src_raw.lower()} source")
-
-        if style_raw:
-            atmos_parts.append(f"{style_raw.lower()} aesthetic")
-        if mood_raw:
-            atmos_parts.append(f"{mood_raw.lower()} atmosphere")
-
-        if atmos_parts:
-            parts.append(", ".join(atmos_parts).capitalize() + ".")
-
-        # R2.D: TONE line
-        tone_desc = _translate_tones(shot)
-        if tone_desc:
-            # Capitalize and ensure it reads as a proper sentence
-            parts.append(tone_desc[0].upper() + tone_desc[1:] if tone_desc else "")
-
-        # R2.E: VFX line
-        vfx_atmos = clean_param(shot.get("vfx_atmos"))
-        vfx_effects = clean_param(shot.get("vfx_effects"))
-        if vfx_atmos:
-            parts.append(f"{vfx_atmos}.")
-        if vfx_effects:
-            parts.append(f"VFX: {vfx_effects}.")
-
-        # R2.F: SECONDARY MOVEMENT line
-        m2_type_raw = clean_param(shot.get("m2_type"))
-        movement2_exists = bool(m2_type_raw) and m2_type_raw.lower() not in ("static", "not specified", "none")
-        if movement2_exists:
-            m2_term = _camera_short_label_1_5(m2_type_raw)
-            m2_pace_raw = clean_param(shot.get("m2_pace"))
-            m2_pace_map = {
-                "Extremely Slow": "very slowly",
-                "Slow": "slowly",
-                "Normal": "",
-                "Fast": "rapidly",
-                "Dynamic": "dynamically",
-            }
-            m2_pace_map_lower = {k.lower(): v for k, v in m2_pace_map.items()}
-            m2_adverb = m2_pace_map_lower.get(m2_pace_raw.lower(), "") if m2_pace_raw else ""
-
-            if m2_adverb:
-                parts.append(f"Then the camera {m2_adverb} transitions to {m2_term}.")
-            else:
-                parts.append(f"Then the camera transitions to {m2_term}.")
-
-        shot_blocks.append(" ".join(parts).strip())
-
-    # If shots_data is provided, append all shot blocks after deduped scene description.
-    if shots_data:
-        sections.extend(shot_blocks)
-
-    # ── 4. SECTION 4: AUDIO & SOUND CUES (at END) ──
-    if audio_sync is not None:
-        dialogue = clean_param(audio_sync.get("dialogue"))
-        sfx = clean_param(audio_sync.get("sfx"))
-        bgm = clean_param(audio_sync.get("bgm"))
-
-        if dialogue or sfx or bgm:
-            audio_parts = []
-
-            if dialogue:
-                lang = audio_sync.get("lang", "English")
-                emo = audio_sync.get("emo", "Calm")
-                timbre = audio_sync.get("timbre", "Normal")
-                pace = audio_sync.get("pace", "Normal")
-
-                lines_raw = [l.strip() for l in dialogue.strip().split("\n") if l.strip()]
-                if len(lines_raw) > 1 and any(":" in l or "：" in l for l in lines_raw):
-                    audio_parts.append(f"Dialogue ({lang}, lip-sync required):")
-                    for line in lines_raw:
-                        audio_parts.append(f"  {line}")
-                else:
-                    audio_parts.append(
-                        f"In a {str(emo).lower()} emotional state, with a {str(timbre).lower()} tone "
-                        f"and a {str(pace).lower()} speaking pace, say in {lang}: \"{dialogue}\""
-                    )
-
-            if bgm:
-                audio_parts.append(f"Background Music: {bgm}")
-            if sfx:
-                audio_parts.append(f"Sound Effects: {sfx}")
-
-            if audio_parts:
-                sections.append("Audio & Sound Cues: " + " ".join(audio_parts))
-
-    return " ".join(sections).strip()
-
 
 def _pre_format_seedance_2_0(scene_description, shots_data, num_imgs, num_vids, num_auds,
                               audio_sync, vision_context, image_usage, workflow_type, duration,
@@ -981,6 +583,11 @@ def _pre_format_seedance_2_0(scene_description, shots_data, num_imgs, num_vids, 
     """
     sections = []
 
+    # Detect if user already assigned @Image/@Video/@Audio tags in their description
+    _user_has_explicit_tags = bool(
+        re.search(r'@(?:Image|Video|Audio)\s*\d|@\d', scene_description or "")
+    )
+
     # ── SECTION 1: PREAMBLE (workflow-dependent @ tag declarations) ──
     if workflow_type == "Video Extension" and num_vids > 0:
         dur_sec = int(duration) if duration is not None else 5
@@ -993,10 +600,12 @@ def _pre_format_seedance_2_0(scene_description, shots_data, num_imgs, num_vids, 
     elif image_usage == "first_frame" and num_imgs > 0:
         sections.append("Starting from the exact composition in @Image 1 (as the first frame),")
     elif image_usage == "composite" and num_imgs >= 2:
-        sections.append(
-            "The character (physical attributes and clothing referenced from @Image 1) "
-            "is located within the environment (architectural and lighting details referenced from @Image 2)."
-        )
+        # Only add composite preamble when the user has NOT already specified tag roles
+        if not _user_has_explicit_tags:
+            sections.append(
+                "The character (physical attributes and clothing referenced from @Image 1) "
+                "is located within the environment (architectural and lighting details referenced from @Image 2)."
+            )
     elif workflow_type == "Video Editing" and num_vids > 0 and num_imgs > 0:
         sections.append(
             "Replace the character in @Video 1 with the figure from @Image 1 "
@@ -1029,116 +638,234 @@ def _pre_format_seedance_2_0(scene_description, shots_data, num_imgs, num_vids, 
     # ── SECTION 3: SCENE DESCRIPTION + SHOT BLOCKS ──
     scene_desc_val = clean_param(scene_description)
 
+    # Normalize shorthand tags: "@1" → "@Image 1", "image @1" → "@Image 1", etc.
+    if scene_desc_val:
+        # "image @1" / "image @2" / "Image @3" → "@Image 1" etc.
+        scene_desc_val = re.sub(
+            r'(?i)image\s*@\s*(\d+)',
+            lambda m: f"@Image {m.group(1)}",
+            scene_desc_val,
+        )
+        # Bare "@1" / "@2" (not already preceded by Image/Video/Audio) → "@Image N"
+        scene_desc_val = re.sub(
+            r'(?<![A-Za-z])@(\d+)',
+            lambda m: f"@Image {m.group(1)}",
+            scene_desc_val,
+        )
+
     if not shots_data:
-        # No shots: single paragraph with scene description
+        # No shots configured in CINEMATOGRAPHY panel
         if scene_desc_val:
-            sections.append(scene_desc_val.strip())
+            # Detect cut indicators in the user's text
+            _cut_parts = re.split(
+                r'(?i)(?:,\s*)?(?:cut\s+(?:to\s+)?shot\s*\d*|cut\s+shot\s*\d*|'
+                r'cut\s+to|taglio|stacco|poi\s+si\s+passa\s+a)',
+                scene_desc_val
+            )
+            _cut_parts = [p.strip() for p in _cut_parts if p and p.strip()]
+
+            if len(_cut_parts) >= 2:
+                # User described multiple shots — distribute across full duration
+                dur = int(duration) if duration else 15
+                per_shot = dur // len(_cut_parts)
+                remainder = dur % len(_cut_parts)
+                t = 0
+                for ci, cpart in enumerate(_cut_parts):
+                    t_end = t + per_shot + (1 if ci < remainder else 0)
+                    t_end = min(t_end, dur)
+                    sections.append(f"{t}s-{t_end}s: {cpart}")
+                    t = t_end
+            else:
+                # Single continuous shot — span full duration
+                dur = int(duration) if duration else 15
+                sections.append(f"0s-{dur}s: {scene_desc_val.strip()}")
     else:
-        # With shots: add scene description first (if different from shot 0 assets), then timestamped blocks
+        # With shots: check if scene description has implicit cuts that need splitting
         first_assets_raw = clean_param((shots_data[0] if shots_data else {}).get("assets"))
-        if scene_desc_val and first_assets_raw and scene_desc_val.lower() != first_assets_raw.lower():
-            sections.append(scene_desc_val.strip())
 
-        for idx, shot in enumerate(shots_data):
-            parts = []
-            m1_start = shot.get('m1_start', 0)
-            m1_end = shot.get('m1_end', 4)
+        # Detect cuts in user's narrative when only 1 shot is configured
+        _scene_has_cuts = bool(scene_desc_val and re.search(
+            r'(?i)(?:cut\s+(?:to\s+)?shot|cut\s+shot|cut\s+to|taglio|stacco|poi\s+si\s+passa)',
+            scene_desc_val
+        ))
 
-            # ASSETS
-            assets_raw = clean_param(shot.get("assets"))
-            if assets_raw:
-                assets = assets_raw
-            elif idx == 0 and scene_desc_val:
-                assets = scene_desc_val.strip()
+        if len(shots_data) == 1 and _scene_has_cuts and scene_desc_val:
+            # User described multiple shots in text but only has 1 shot panel active
+            # Split the narrative into multiple timestamp blocks spanning full duration
+            # using the cinematography params from Shot 1 for all blocks
+            shot = shots_data[0]
+            _cut_parts = re.split(
+                r'(?i)(?:,\s*)?(?:cut\s+(?:to\s+)?shot\s*\d*|cut\s+shot\s*\d*|'
+                r'cut\s+to|taglio|stacco|poi\s+si\s+passa\s+a)',
+                scene_desc_val
+            )
+            _cut_parts = [p.strip() for p in _cut_parts if p and p.strip()]
+
+            if len(_cut_parts) >= 2:
+                dur = int(duration) if duration else 15
+                per_shot = dur // len(_cut_parts)
+                remainder = dur % len(_cut_parts)
+
+                # Extract cinematography from Shot 1 to apply to all blocks
+                tone_desc = _translate_tones(shot)
+                m1_type_raw = clean_param(shot.get("m1_type"))
+                m1_type_exp = _expand_cinematic(m1_type_raw) if m1_type_raw and m1_type_raw.lower() not in ("static", "not specified", "none") else None
+                m1_angle_raw = clean_param(shot.get("m1_angle")) or "eye-level"
+                m1_angle_exp = _expand_cinematic(m1_angle_raw) or m1_angle_raw
+                style_raw = clean_param(shot.get("style"))
+                mood_raw = clean_param(shot.get("mood"))
+                lighting_raw = clean_param(shot.get("lighting"))
+                style_exp = _expand_cinematic(style_raw) if style_raw else None
+                mood_exp = _expand_cinematic(mood_raw) if mood_raw else None
+                lighting_exp = _expand_cinematic(lighting_raw) if lighting_raw else None
+
+                t = 0
+                for ci, cpart in enumerate(_cut_parts):
+                    t_end = t + per_shot + (1 if ci < remainder else 0)
+                    t_end = min(t_end, dur)
+                    block_parts = [f"{t}s-{t_end}s: {cpart}"]
+                    # Add camera only to first block (or if user hasn't specified camera in their text)
+                    if ci == 0 and m1_type_exp:
+                        block_parts.append(f"The camera executes a {m1_type_exp} from {m1_angle_exp}.")
+                    # Add tone only to first block
+                    if ci == 0 and tone_desc:
+                        block_parts.append(tone_desc[0].upper() + tone_desc[1:])
+                    # Add atmosphere only to first block
+                    atmos_parts = []
+                    if ci == 0:
+                        if lighting_exp:
+                            atmos_parts.append(lighting_exp)
+                        if style_exp:
+                            atmos_parts.append(f"{style_exp} aesthetic")
+                        if mood_exp:
+                            atmos_parts.append(f"{mood_exp} atmosphere")
+                    if atmos_parts:
+                        block_parts.append(", ".join(atmos_parts).capitalize() + ".")
+                    sections.append(" ".join(block_parts))
+                    t = t_end
             else:
-                assets = "the scene"
+                # Fallback: couldn't split — treat as single block
+                if scene_desc_val and first_assets_raw and scene_desc_val.lower() != first_assets_raw.lower():
+                    sections.append(scene_desc_val.strip())
+                for idx, shot in enumerate(shots_data):
+                    parts = []
+                    m1_start = shot.get('m1_start', 0)
+                    m1_end = shot.get('m1_end', 4)
+                    assets_raw = clean_param(shot.get("assets"))
+                    assets = assets_raw if assets_raw else (scene_desc_val.strip() if idx == 0 and scene_desc_val else "the scene")
+                    shot_type = clean_param(shot.get("shot_type"))
+                    shot_type_str = f"{shot_type.lower()} of " if shot_type else ""
+                    timestamp = f"{int(m1_start)}s-{int(m1_end)}s:"
+                    if shot_type:
+                        parts.append(f"{timestamp} A {shot_type_str}{assets}.")
+                    else:
+                        parts.append(f"{timestamp} {assets}.")
+                    sections.append(" ".join(parts).strip())
+        else:
+            # Standard path: use shot panel timestamps as-is
+            if scene_desc_val and first_assets_raw and scene_desc_val.lower() != first_assets_raw.lower():
+                sections.append(scene_desc_val.strip())
 
-            # SHOT TYPE
-            shot_type = clean_param(shot.get("shot_type"))
-            shot_type_str = f"{shot_type.lower()} of " if shot_type else ""
+            for idx, shot in enumerate(shots_data):
+                parts = []
+                m1_start = shot.get('m1_start', 0)
+                m1_end = shot.get('m1_end', 4)
 
-            # CAMERA MOVEMENT (use short labels, expanded by cinematic dict)
-            m1_type_raw = clean_param(shot.get("m1_type"))
-            m1_type_exp = _expand_cinematic(m1_type_raw) if m1_type_raw and m1_type_raw.lower() not in ("static", "not specified", "none") else None
-            m1_pace_raw = clean_param(shot.get("m1_pace")) or "Normal"
-            m1_angle_raw = clean_param(shot.get("m1_angle")) or "eye-level"
-            m1_angle_exp = _expand_cinematic(m1_angle_raw) or m1_angle_raw
-
-            # Build timestamp line
-            timestamp = f"{int(m1_start)}s-{int(m1_end)}s:"
-            if shot_type:
-                parts.append(f"{timestamp} A {shot_type_str}{assets}.")
-            else:
-                parts.append(f"{timestamp} {assets}.")
-
-            # Camera
-            if m1_type_exp:
-                pace_adverb = ""
-                if m1_pace_raw:
-                    pace_map = {"Extremely Slow": "very slowly", "Slow": "slowly", "Normal": "", "Fast": "rapidly", "Dynamic": "dynamically", "Time-lapse": "in time-lapse"}
-                    pace_map_lower = {k.lower(): v for k, v in pace_map.items()}
-                    pace_adverb = pace_map_lower.get(m1_pace_raw.lower(), "")
-                if pace_adverb:
-                    parts.append(f"The camera {pace_adverb} executes a {m1_type_exp} from {m1_angle_exp}.")
+                # ASSETS
+                assets_raw = clean_param(shot.get("assets"))
+                if assets_raw:
+                    assets = assets_raw
+                elif idx == 0 and scene_desc_val:
+                    assets = scene_desc_val.strip()
                 else:
-                    parts.append(f"The camera executes a {m1_type_exp} from {m1_angle_exp}.")
+                    assets = "the scene"
 
-            # ATMOSPHERE (style + mood + lighting)
-            style_raw = clean_param(shot.get("style"))
-            mood_raw = clean_param(shot.get("mood"))
-            lighting_raw = clean_param(shot.get("lighting"))
-            lighting_dir_raw = clean_param(shot.get("lighting_direction"))
+                # SHOT TYPE
+                shot_type = clean_param(shot.get("shot_type"))
+                shot_type_str = f"{shot_type.lower()} of " if shot_type else ""
 
-            style_exp = _expand_cinematic(style_raw) if style_raw else None
-            mood_exp = _expand_cinematic(mood_raw) if mood_raw else None
-            lighting_exp = _expand_cinematic(lighting_raw) if lighting_raw else None
-            lighting_dir_exp = _expand_cinematic(lighting_dir_raw) if lighting_dir_raw else None
+                # CAMERA MOVEMENT (use short labels, expanded by cinematic dict)
+                m1_type_raw = clean_param(shot.get("m1_type"))
+                m1_type_exp = _expand_cinematic(m1_type_raw) if m1_type_raw and m1_type_raw.lower() not in ("static", "not specified", "none") else None
+                m1_pace_raw = clean_param(shot.get("m1_pace")) or "Normal"
+                m1_angle_raw = clean_param(shot.get("m1_angle")) or "eye-level"
+                m1_angle_exp = _expand_cinematic(m1_angle_raw) or m1_angle_raw
 
-            atmos_parts = []
-            if lighting_exp and lighting_dir_exp:
-                atmos_parts.append(f"{lighting_exp} combined with {lighting_dir_exp}")
-            elif lighting_exp:
-                atmos_parts.append(lighting_exp)
-            elif lighting_dir_exp:
-                atmos_parts.append(lighting_dir_exp)
-            if style_exp:
-                atmos_parts.append(f"{style_exp} aesthetic")
-            if mood_exp:
-                atmos_parts.append(f"{mood_exp} atmosphere")
-            if atmos_parts:
-                parts.append(", ".join(atmos_parts).capitalize() + ".")
-
-            # TONES (only non-default)
-            tone_desc = _translate_tones(shot)
-            if tone_desc:
-                parts.append(tone_desc[0].upper() + tone_desc[1:])
-
-            # VFX
-            vfx_atmos = clean_param(shot.get("vfx_atmos"))
-            vfx_effects = clean_param(shot.get("vfx_effects"))
-            if vfx_atmos:
-                parts.append(f"{vfx_atmos}.")
-            if vfx_effects:
-                parts.append(f"VFX: {vfx_effects}.")
-
-            # SECONDARY MOVEMENT
-            m2_type_raw = clean_param(shot.get("m2_type"))
-            m2_type_exp = _expand_cinematic(m2_type_raw) if m2_type_raw and m2_type_raw.lower() not in ("static", "not specified", "none") else None
-            if m2_type_exp:
-                m2_start = shot.get('m2_start', m1_end)
-                m2_end = shot.get('m2_end', m2_start + 4)
-                m2_pace_raw = clean_param(shot.get("m2_pace")) or "Normal"
-                m2_angle_raw = clean_param(shot.get("m2_angle")) or "eye-level"
-                m2_angle_exp = _expand_cinematic(m2_angle_raw) or m2_angle_raw
-                pace_map2 = {"Extremely Slow": "very slowly", "Slow": "slowly", "Normal": "", "Fast": "rapidly", "Dynamic": "dynamically"}
-                pace_map2_lower = {k.lower(): v for k, v in pace_map2.items()}
-                m2_adverb = pace_map2_lower.get(m2_pace_raw.lower(), "") if m2_pace_raw else ""
-                if m2_adverb:
-                    parts.append(f"{int(m2_start)}s-{int(m2_end)}s: The camera {m2_adverb} transitions to {m2_type_exp} from {m2_angle_exp}.")
+                # Build timestamp line
+                timestamp = f"{int(m1_start)}s-{int(m1_end)}s:"
+                if shot_type:
+                    parts.append(f"{timestamp} A {shot_type_str}{assets}.")
                 else:
-                    parts.append(f"{int(m2_start)}s-{int(m2_end)}s: The camera transitions to {m2_type_exp} from {m2_angle_exp}.")
+                    parts.append(f"{timestamp} {assets}.")
 
-            sections.append(" ".join(parts).strip())
+                # Camera
+                if m1_type_exp:
+                    pace_adverb = ""
+                    if m1_pace_raw:
+                        pace_map = {"Extremely Slow": "very slowly", "Slow": "slowly", "Normal": "", "Fast": "rapidly", "Dynamic": "dynamically", "Time-lapse": "in time-lapse"}
+                        pace_map_lower = {k.lower(): v for k, v in pace_map.items()}
+                        pace_adverb = pace_map_lower.get(m1_pace_raw.lower(), "")
+                    if pace_adverb:
+                        parts.append(f"The camera {pace_adverb} executes a {m1_type_exp} from {m1_angle_exp}.")
+                    else:
+                        parts.append(f"The camera executes a {m1_type_exp} from {m1_angle_exp}.")
+
+                # ATMOSPHERE (style + mood + lighting)
+                style_raw = clean_param(shot.get("style"))
+                mood_raw = clean_param(shot.get("mood"))
+                lighting_raw = clean_param(shot.get("lighting"))
+                lighting_dir_raw = clean_param(shot.get("lighting_direction"))
+
+                style_exp = _expand_cinematic(style_raw) if style_raw else None
+                mood_exp = _expand_cinematic(mood_raw) if mood_raw else None
+                lighting_exp = _expand_cinematic(lighting_raw) if lighting_raw else None
+                lighting_dir_exp = _expand_cinematic(lighting_dir_raw) if lighting_dir_raw else None
+
+                atmos_parts = []
+                if lighting_exp and lighting_dir_exp:
+                    atmos_parts.append(f"{lighting_exp} combined with {lighting_dir_exp}")
+                elif lighting_exp:
+                    atmos_parts.append(lighting_exp)
+                elif lighting_dir_exp:
+                    atmos_parts.append(lighting_dir_exp)
+                if style_exp:
+                    atmos_parts.append(f"{style_exp} aesthetic")
+                if mood_exp:
+                    atmos_parts.append(f"{mood_exp} atmosphere")
+                if atmos_parts:
+                    parts.append(", ".join(atmos_parts).capitalize() + ".")
+
+                # TONES (only non-default)
+                tone_desc = _translate_tones(shot)
+                if tone_desc:
+                    parts.append(tone_desc[0].upper() + tone_desc[1:])
+
+                # VFX
+                vfx_atmos = clean_param(shot.get("vfx_atmos"))
+                vfx_effects = clean_param(shot.get("vfx_effects"))
+                if vfx_atmos:
+                    parts.append(f"{vfx_atmos}.")
+                if vfx_effects:
+                    parts.append(f"VFX: {vfx_effects}.")
+
+                # SECONDARY MOVEMENT
+                m2_type_raw = clean_param(shot.get("m2_type"))
+                m2_type_exp = _expand_cinematic(m2_type_raw) if m2_type_raw and m2_type_raw.lower() not in ("static", "not specified", "none") else None
+                if m2_type_exp:
+                    m2_start = shot.get('m2_start', m1_end)
+                    m2_end = shot.get('m2_end', m2_start + 4)
+                    m2_pace_raw = clean_param(shot.get("m2_pace")) or "Normal"
+                    m2_angle_raw = clean_param(shot.get("m2_angle")) or "eye-level"
+                    m2_angle_exp = _expand_cinematic(m2_angle_raw) or m2_angle_raw
+                    pace_map2 = {"Extremely Slow": "very slowly", "Slow": "slowly", "Normal": "", "Fast": "rapidly", "Dynamic": "dynamically"}
+                    pace_map2_lower = {k.lower(): v for k, v in pace_map2.items()}
+                    m2_adverb = pace_map2_lower.get(m2_pace_raw.lower(), "") if m2_pace_raw else ""
+                    if m2_adverb:
+                        parts.append(f"{int(m2_start)}s-{int(m2_end)}s: The camera {m2_adverb} transitions to {m2_type_exp} from {m2_angle_exp}.")
+                    else:
+                        parts.append(f"{int(m2_start)}s-{int(m2_end)}s: The camera transitions to {m2_type_exp} from {m2_angle_exp}.")
+
+                sections.append(" ".join(parts).strip())
 
     # ── SECTION 4: AUDIO & SOUND CUES ──
     if audio_sync is not None:
@@ -1177,30 +904,28 @@ def _pre_format_seedance_2_0(scene_description, shots_data, num_imgs, num_vids, 
     return " ".join(sections).strip()
 
 
-def build_prompt(scene_description, duration=8, temperature=0.5, workflow_type="Standard", 
-                 num_imgs=0, num_vids=0, num_auds=0, shots_data=[], audio_sync=None, 
-                 vision_context=None, image_usage="auto", for_seedance_1_5=False,
-                 enforce_stability=False, **kwargs):
+def build_prompt(scene_description, duration=8, temperature=0.5,
+                 workflow_type="Standard",
+                 num_imgs=0, num_vids=0, num_auds=0, shots_data=[], audio_sync=None,
+                 vision_context=None, image_usage="auto", enforce_stability=False, **kwargs):
     """
     image_usage: "auto" | "first_frame" | "reference_only" | "composite"
-    for_seedance_1_5: if True, timeline has no timestamps (fluid prose only) and system prompt adds 1.5-only rules.
     enforce_stability: if True, appends stability constraints to Seedance 2.0 prompts (disable for morphing/transformation scenes).
     """
     # Validate Seedance 2.0 file limits (official: max 12 mixed files, max 9 images, max 3 videos, max 3 audio)
-    if not for_seedance_1_5:
-        total_files = num_imgs + num_vids + num_auds
-        if total_files > 12:
-            import warnings
-            warnings.warn(f"Seedance 2.0 supports max 12 mixed files. You have {total_files}. Results may be unpredictable.")
-        if num_imgs > 9:
-            import warnings
-            warnings.warn(f"Seedance 2.0 supports max 9 images. You have {num_imgs}.")
-        if num_vids > 3:
-            import warnings
-            warnings.warn(f"Seedance 2.0 supports max 3 video clips. You have {num_vids}.")
-        if num_auds > 3:
-            import warnings
-            warnings.warn(f"Seedance 2.0 supports max 3 audio files. You have {num_auds}.")
+    total_files = num_imgs + num_vids + num_auds
+    if total_files > 12:
+        import warnings
+        warnings.warn(f"Seedance 2.0 supports max 12 mixed files. You have {total_files}. Results may be unpredictable.")
+    if num_imgs > 9:
+        import warnings
+        warnings.warn(f"Seedance 2.0 supports max 9 images. You have {num_imgs}.")
+    if num_vids > 3:
+        import warnings
+        warnings.warn(f"Seedance 2.0 supports max 3 video clips. You have {num_vids}.")
+    if num_auds > 3:
+        import warnings
+        warnings.warn(f"Seedance 2.0 supports max 3 audio files. You have {num_auds}.")
 
     # 0. Resolve image usage intent for prompt strategy
     if image_usage == "auto":
@@ -1228,25 +953,19 @@ def build_prompt(scene_description, duration=8, temperature=0.5, workflow_type="
     if num_auds > 0: available_tags.append(", ".join([f"@Audio {i+1}" for i in range(num_auds)]))
     tag_string = " | ".join(available_tags) if available_tags else "No media tags available."
 
-    # 2. Timeline: for 1.5 no timestamps (fluid prose only); for 2.0 rigid timestamps
-    timeline_script = _format_timeline(shots_data, for_seedance_1_5=for_seedance_1_5)
+    # 2. Timeline: rigid timestamps for Seedance 2.0
+    timeline_script = _format_timeline(shots_data)
     has_any_movement = any(
         clean_param(s.get('m1_type')) or clean_param(s.get('m2_type')) for s in shots_data
     )
     shots_context = ""
     if timeline_script:
-        if for_seedance_1_5:
-            shots_context = f"""
-MOVEMENT CUES (weave into fluid narrative; do NOT output any timestamps or second ranges like [0s-8s]):
-{timeline_script}
-"""
-        else:
-            shots_context = f"""
+        shots_context = f"""
 TIMELINE (you MUST respect these timestamps rigidly; do not shift or merge them):
 {timeline_script}
 """
 
-    # 3. Audio / Lip-Sync (structured for Seedance 1.5 native audio-video)
+    # 3. Audio / Lip-Sync (Seedance 2.0 native audio-video)
     audio_str = "None"
     if audio_sync:
         audio_parts = []
@@ -1324,7 +1043,21 @@ TIMELINE (you MUST respect these timestamps rigidly; do not shift or merge them)
     - Generate a NEW scene/shot that matches the reference; do not say the video "starts from" the image.
     """
     elif image_usage == "composite" and num_imgs >= 2:
-        request_context = f"""
+        _user_has_explicit_tags_bp = bool(
+            re.search(r'@(?:Image|Video|Audio)\s*\d|@\d', scene_description or "")
+        )
+        if _user_has_explicit_tags_bp:
+            request_context = f"""
+    REQUEST TYPE: USER-DIRECTED MULTI-REFERENCE
+    - The user has {num_imgs} images and has EXPLICITLY assigned @Image tags in their scene description.
+    - RESPECT the user's @Image assignments exactly as written — each tag has a specific role the user defined.
+    - NEVER renumber or reassign tags. @Image 1 means @Image 1, @Image 2 means @Image 2.
+    - NEVER add a composite header like "The character from @Image 1 is located in the environment of @Image 2" — the user has already specified what each image does.
+    - Use attribute locking phrasing ONLY for the tags the user explicitly mentions and in the role the user assigned.
+    - If the user says @Image 1 is a diver reference and @Image 2 is a crate reference, respect that — do not swap or merge roles.
+    """
+        else:
+            request_context = f"""
     REQUEST TYPE: COMPOSITE (multi-image reference)
     - The user wants to combine elements from {num_imgs} images. Each @Image should have a clear purpose.
     - Common patterns (use whichever fits the user's intent):
@@ -1339,68 +1072,47 @@ TIMELINE (you MUST respect these timestamps rigidly; do not shift or merge them)
     else:
         request_context = "\n    REQUEST TYPE: Standard generation. Use @ tags to state how each asset is used (reference, first frame, etc.) as appropriate to the narrative.\n"
     
-    # Seedance 2.0 only: Technical Blueprint + CRITICAL OVERRIDE
+    # Seedance 2.0: Technical Blueprint + CRITICAL OVERRIDE
     technical_blueprint_block = ""
     critical_override_block = ""
-    if not for_seedance_1_5:
-        ui_params = {}
-        if shots_data:
-            s0 = shots_data[0]
-            ui_params = {
-                "shot_type": clean_param(s0.get("shot_type")),
-                "camera_angle": clean_param(s0.get("m1_angle")),
-                "movement_type": clean_param(s0.get("m1_type")),
-                "lighting_type": clean_param(s0.get("lighting")),
-                "lighting_direction": clean_param(s0.get("lighting_direction")),
-                "visual_style": clean_param(s0.get("style")),
-                "mood": clean_param(s0.get("mood")),
-            }
-        ui_params.update({k: v for k, v in (kwargs or {}).items() if k in ("shot_type", "camera_angle", "movement_type", "lighting_type", "lighting_direction", "visual_style", "mood") and clean_param(v)})
-        technical_blueprint_block = _build_technical_blueprint(ui_params)
-        technical_blueprint_block = "\n    [Technical Blueprint]\n    " + technical_blueprint_block.replace("\n", "\n    ")
-        if shots_data:
-            critical_override_block = _critical_override_tones_2_0(shots_data)
-            if critical_override_block:
-                critical_override_block = "\n    CRITICAL OVERRIDE (tones — apply these directives):\n    " + critical_override_block.replace("\n", "\n    ")
+    ui_params = {}
+    if shots_data:
+        s0 = shots_data[0]
+        ui_params = {
+            "shot_type": clean_param(s0.get("shot_type")),
+            "camera_angle": clean_param(s0.get("m1_angle")),
+            "movement_type": clean_param(s0.get("m1_type")),
+            "lighting_type": clean_param(s0.get("lighting")),
+            "lighting_direction": clean_param(s0.get("lighting_direction")),
+            "visual_style": clean_param(s0.get("style")),
+            "mood": clean_param(s0.get("mood")),
+        }
+    ui_params.update({k: v for k, v in (kwargs or {}).items() if k in ("shot_type", "camera_angle", "movement_type", "lighting_type", "lighting_direction", "visual_style", "mood") and clean_param(v)})
+    technical_blueprint_block = _build_technical_blueprint(ui_params)
+    technical_blueprint_block = "\n    [Technical Blueprint]\n    " + technical_blueprint_block.replace("\n", "\n    ")
+    if shots_data:
+        critical_override_block = _critical_override_tones_2_0(shots_data)
+        if critical_override_block:
+            critical_override_block = "\n    CRITICAL OVERRIDE (tones — apply these directives):\n    " + critical_override_block.replace("\n", "\n    ")
 
-    # TASK 1: raw_data for LLM user message (both 1.5 and 2.0 now use pre-formatted drafts)
-    if for_seedance_1_5:
-        # Pre-format draft in Seedance 1.5 grammar
-        draft_1_5 = _pre_format_seedance_1_5(
-            scene_description=scene_description,
-            shots_data=shots_data,
-            num_imgs=num_imgs, num_vids=num_vids, num_auds=num_auds,
-            audio_sync=audio_sync,
-            vision_context=vision_context,
-            image_usage=image_usage,
-            workflow_type=workflow_type,
-            duration=duration,
-        )
-        raw_data = f"""
-DRAFT IN SEEDANCE 1.5 FORMAT (refine this into polished cinematic prose):
-
-{draft_1_5}
-"""
-        raw_prompt = draft_1_5
-    else:
-        # Pre-format draft in Seedance 2.0 Directorial Formula grammar
-        draft_2_0 = _pre_format_seedance_2_0(
-            scene_description=scene_description,
-            shots_data=shots_data,
-            num_imgs=num_imgs, num_vids=num_vids, num_auds=num_auds,
-            audio_sync=audio_sync,
-            vision_context=vision_context,
-            image_usage=image_usage,
-            workflow_type=workflow_type,
-            duration=duration,
-            enforce_stability=enforce_stability,
-        )
-        raw_data = f"""
+    # TASK 1: raw_data for LLM user message (pre-formatted Seedance 2.0 draft)
+    draft_2_0 = _pre_format_seedance_2_0(
+        scene_description=scene_description,
+        shots_data=shots_data,
+        num_imgs=num_imgs, num_vids=num_vids, num_auds=num_auds,
+        audio_sync=audio_sync,
+        vision_context=vision_context,
+        image_usage=image_usage,
+        workflow_type=workflow_type,
+        duration=duration,
+        enforce_stability=enforce_stability,
+    )
+    raw_data = f"""
 DRAFT IN SEEDANCE 2.0 DIRECTORIAL FORMULA (refine this into polished cinematic prose):
 
 {draft_2_0}
 """
-        raw_prompt = draft_2_0
+    raw_prompt = draft_2_0
 
     # --- CONDITIONAL CREATIVITY LOGIC ---
     creative_rule = ""
@@ -1413,13 +1125,7 @@ You may expand on simple prompts (e.g., turn "A man walks" into "A weary man tru
     # Workflow-specific system instruction (modular template)
     workflow_instruction = _get_workflow_system_instruction(workflow_type, image_usage, num_vids, num_imgs)
 
-    has_audio_sync = bool(audio_sync and (clean_param(audio_sync.get("dialogue")) or clean_param(audio_sync.get("sfx")) or clean_param(audio_sync.get("bgm"))))
-
-    # Build model-specific system prompt (STEP 2: separated per official ByteDance guides)
-    if for_seedance_1_5:
-        system_prompt = _system_prompt_seedance_1_5(workflow_instruction, has_audio_sync, creative_rule)
-    else:
-        system_prompt = _system_prompt_seedance_2_0(workflow_instruction, creative_rule)
+    system_prompt = _system_prompt_seedance_2_0(workflow_instruction, creative_rule)
 
     final_narrative = call_llm_for_prompt(system_prompt, raw_data, temperature=temperature)
     
@@ -1437,7 +1143,7 @@ You may expand on simple prompts (e.g., turn "A man walks" into "A weary man tru
         final_narrative = _truncate_prompt(final_narrative, max_words=500)
 
     # Video Extension: force exact leading formula so prompt matches Generation Duration slider
-    if not for_seedance_1_5 and workflow_type == "Video Extension" and num_vids > 0 and duration is not None:
+    if workflow_type == "Video Extension" and num_vids > 0 and duration is not None:
         try:
             dur_int = int(duration)
             prefix = f"Extend @Video 1 by {dur_int}s. "
@@ -1447,7 +1153,7 @@ You may expand on simple prompts (e.g., turn "A man walks" into "A weary man tru
             pass
 
     # Seedance 2.0: optionally inject stability constraints (disabled by default per official docs)
-    if not for_seedance_1_5 and enforce_stability and final_narrative and not final_narrative.startswith("[LLM ERROR"):
+    if enforce_stability and final_narrative and not final_narrative.startswith("[LLM ERROR"):
         pass
 
     # Return both RAW and OPTIMISED prompts so the UI can choose which one to send to Seedance

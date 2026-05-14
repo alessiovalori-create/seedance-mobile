@@ -21,7 +21,7 @@ import streamlit.components.v1 as components
 import base64 as _b64
 
 from builder import build_prompt as build_video_prompt, analyze_cinematography, build_image_prompt
-from generator import generate_video, generate_seedream_image, SEEDANCE_1_5_MODEL_ID, SEEDANCE_2_0_MODEL_ID, SEEDREAM_5_0_LITE_MODEL_ID, SEEDREAM_4_5_MODEL_ID, PEXELS_API_KEY, UNSPLASH_API_KEY, estimate_cost, format_cost_str, _estimate_seedance2_usage
+from generator import generate_video, generate_seedream_image, SEEDANCE_2_0_MODEL_ID, SEEDREAM_5_0_LITE_MODEL_ID, SEEDREAM_4_5_MODEL_ID, PEXELS_API_KEY, UNSPLASH_API_KEY, estimate_cost, format_cost_str, _estimate_seedance2_usage
 GENERATION_ENABLED = True  # ← Set to False to disable generation
 try:
     from streamlit_sortables import sort_items
@@ -2178,8 +2178,6 @@ _CONSOLE_FILE_AND_ASSET_PICKER_KEYS = frozenset({
     "s2_first_frame", "s2_assets_first_frame", "s2_last_frame", "s2_assets_last_frame",
     "s2_first_only", "s2_assets_first_only", "s2_images", "s2_assets_images",
     "s2_videos", "s2_assets_videos", "s2_audio", "s2_assets_audio",
-    "s15_first_frame", "s15_assets_first_frame", "s15_last_frame", "s15_assets_last_frame",
-    "s15_images_single", "s15_assets_images",
     "sd_refs_upload", "sd_assets_refs",
 })
 
@@ -2211,15 +2209,14 @@ def _console_session_state_assign_forbidden(k: str) -> bool:
 def _clear_console_prompts_for_project_change():
     """When switching projects, clear prompts/results only (not technical parameters)."""
     for k in (
-        "s2_opt_prompt", "s2_raw_prompt", "s15_opt_prompt", "s15_raw_prompt",
+        "s2_opt_prompt", "s2_raw_prompt",
         "sd_opt_prompt", "sd_raw_prompt", "json_preview", "_json_dict",
-        "s2_last_result", "s15_last_result", "sd_last_result", "show_generate_button",
+        "s2_last_result", "sd_last_result", "show_generate_button",
         "_cached_s2_first_frame", "_cached_s2_last_frame", "_cached_s2_first_only",
         "_cached_s2_images", "_cached_s2_videos", "_cached_s2_audio",
-        "_cached_s15_first_frame", "_cached_s15_last_frame", "_cached_s15_images",
         "_cached_sd_refs",
         "_s2_img_saved_names", "_s2_vid_saved_names", "_s2_aud_saved_names",
-        "_s15_img_saved_names", "_sd_ref_saved_names",
+        "_sd_ref_saved_names",
         "_console_ref_tag_map",
     ):
         st.session_state.pop(k, None)
@@ -2231,10 +2228,9 @@ def _console_snapshot_key_list():
 
     keys.update([
         "model_selector",
-        "action_desc_s2", "s15_action_desc", "sd_prompt_input",
+        "action_desc_s2", "sd_prompt_input",
         "s2_entry_point", "s2_workflow", "s2_workflow_fl", "s2_workflow_ff",
         "s2_image_usage",
-        "s15_workflow",
         "sd_style_select",
     ])
 
@@ -2242,33 +2238,28 @@ def _console_snapshot_key_list():
 
     keys.update([
         "s2_raw_prompt", "s2_opt_prompt", "s2_last_result",
-        "s15_raw_prompt", "s15_opt_prompt", "s15_last_result",
         "sd_raw_prompt", "sd_opt_prompt", "sd_last_result",
         "json_preview", "_json_dict",
-        "show_generate_button", "s15_show_generate",
-        "_do_preview_s2", "_do_preview_s15", "_do_preview_sd",
-        "_do_generate_s2", "_do_generate_s15", "_do_generate_sd",
+        "show_generate_button",
+        "_do_preview_s2", "_do_preview_sd",
+        "_do_generate_s2", "_do_generate_sd",
         "_preview_feedback",
         "canvas_prompt_editor", "canvas_json_viewer",
-        "vision_context", "s15_vision_context",
+        "vision_context",
     ])
 
     keys.update([
         "video_resolution", "video_aspect_ratio", "common_duration",
-        "gen_mode_selector",
-        "s15_resolution", "s15_aspect_ratio", "s15_duration", "s15_gen_mode",
+        "gen_mode_selector", "s2_gen_mode",
         "sd_resolution", "sd_ar_select",
         "common_temperature", "common_num_variations", "last_num_variations",
-        "s15_temperature", "s15_num_variations",
         "sd_optimize", "enforce_stability",
-        "enable_audio", "s15_enable_audio", "s2_audio_output",
+        "enable_audio", "s2_audio_output",
         "v_lang", "v_emo", "v_timbre", "v_pace",
         "s2_dialogue", "s2_sfx",
-        "s15_v_lang", "s15_v_emo", "s15_v_timbre", "s15_v_pace",
-        "s15_dialogue", "s15_sfx",
     ])
     for i in range(5):
-        keys.update([f"seed_input_{i}", f"s15_seed_{i}"])
+        keys.update([f"seed_input_{i}"])
 
     keys.update([
         "sd_shot_type", "sd_mood", "sd_period",
@@ -2276,9 +2267,19 @@ def _console_snapshot_key_list():
         "sd_light_src", "sd_light_dir", "sd_light_type",
     ])
 
-    keys.update(["en_s2", "en_s3", "s15_en_s2", "s15_en_s3"])
+    keys.update([
+        "_persist_s2_assets_images",
+        "_persist_s2_assets_videos",
+        "_persist_s2_assets_audio",
+        "_persist_s2_assets_first_frame",
+        "_persist_s2_assets_last_frame",
+        "_persist_s2_assets_first_only",
+        "_persist_sd_assets_refs",
+    ])
 
-    for prefix in ["s", "s15_"]:
+    keys.update(["en_s2", "en_s3"])
+
+    for prefix in ["s"]:
         for shot_n in range(1, 4):
             k = f"{prefix}{shot_n}"
             keys.update([
@@ -2309,16 +2310,13 @@ _CONSOLE_SNAPSHOT_SKIP = frozenset({
     "s2_images", "s2_assets_images",
     "s2_videos", "s2_assets_videos",
     "s2_audio", "s2_assets_audio",
-    "s15_first_frame", "s15_assets_first_frame",
-    "s15_last_frame", "s15_assets_last_frame",
-    "s15_images_single", "s15_assets_images",
     "sd_refs_upload", "sd_assets_refs",
-    "show_generate_button", "s15_show_generate",
-    "_do_preview_s2", "_do_preview_s15", "_do_preview_sd",
-    "_do_generate_s2", "_do_generate_s15", "_do_generate_sd",
+    "show_generate_button",
+    "_do_preview_s2", "_do_preview_sd",
+    "_do_generate_s2", "_do_generate_sd",
     "_preview_feedback",
     "canvas_prompt_editor", "canvas_json_viewer",
-    "s2_last_result", "s15_last_result", "sd_last_result",
+    "s2_last_result", "sd_last_result",
     "_console_reset_pending",
     "_console_param_snapshot",
 })
@@ -2339,15 +2337,19 @@ def _save_console_param_snapshot():
 
 
 def _restore_console_param_snapshot():
-    """Re-inject params removed while Gallery/Assets/etc. had the Console branch unmounted."""
+    """Re-inject params only when returning to Console from another room."""
+    if st.session_state.get("active_page") != "console":
+        return
+    if not st.session_state.get("_console_was_away"):
+        return
+    st.session_state["_console_was_away"] = False
     snap = st.session_state.get("_console_param_snapshot")
     if not isinstance(snap, dict) or not snap:
         return
     for sk, sv in snap.items():
         if _console_session_state_assign_forbidden(sk):
             continue
-        if sk not in st.session_state:
-            st.session_state[sk] = sv
+        st.session_state[sk] = sv
 
 
 def check_password():
@@ -2451,7 +2453,6 @@ if check_password():
         .generate-btn-wrap .stButton > button:disabled { opacity: 1 !important; visibility: visible !important; background: #F7F7F7 !important; color: #000000 !important; -webkit-text-fill-color: #000000 !important; border: 1px solid #d9d9d9 !important; cursor: not-allowed !important; }
         /* Hard override for generate buttons by key */
         div[data-testid="stButton"][data-key*="s2_production_opt"] > button,
-        div[data-testid="stButton"][data-key*="s15_production_opt"] > button,
         div[data-testid="stButton"][data-key*="sd_production_opt"] > button {
             background: #F7F7F7 !important;
             color: #000000 !important;
@@ -2466,14 +2467,12 @@ if check_password():
             height: 46px !important;
         }
         div[data-testid="stButton"][data-key*="s2_production_opt"],
-        div[data-testid="stButton"][data-key*="s15_production_opt"],
         div[data-testid="stButton"][data-key*="sd_production_opt"] {
             opacity: 1 !important;
             visibility: visible !important;
             filter: none !important;
         }
         div[data-testid="stButton"][data-key*="s2_production_opt"] > button[kind="primary"],
-        div[data-testid="stButton"][data-key*="s15_production_opt"] > button[kind="primary"],
         div[data-testid="stButton"][data-key*="sd_production_opt"] > button[kind="primary"] {
             background: #00E676 !important;
             color: #000000 !important;
@@ -2481,7 +2480,6 @@ if check_password():
             border: none !important;
         }
         div[data-testid="stButton"][data-key*="s2_production_opt"] > button:disabled,
-        div[data-testid="stButton"][data-key*="s15_production_opt"] > button:disabled,
         div[data-testid="stButton"][data-key*="sd_production_opt"] > button:disabled {
             background: #F7F7F7 !important;
             color: #000000 !important;
@@ -2498,7 +2496,6 @@ if check_password():
         }
         /* PREVIEW button inside canvas */
         div[data-testid="stButton"][data-key*="preview_prompt_btn"] > button,
-        div[data-testid="stButton"][data-key*="s15_preview_btn"] > button,
         div[data-testid="stButton"][data-key*="sd_preview_btn"] > button {
             background: #FFEB3B !important;
             color: #000000 !important;
@@ -2511,7 +2508,6 @@ if check_password():
             margin-top: 22px !important;
         }
         div[data-testid="stButton"][data-key*="preview_prompt_btn"] > button:hover,
-        div[data-testid="stButton"][data-key*="s15_preview_btn"] > button:hover,
         div[data-testid="stButton"][data-key*="sd_preview_btn"] > button:hover {
             background: #FFFF00 !important;
             box-shadow: 0 4px 24px rgba(255, 255, 0, 0.5) !important;
@@ -3509,7 +3505,6 @@ if check_password():
         }
         /* ASSETS multiselects in WORKFLOW */
         div[data-testid="stMultiSelect"][data-key^="s2_assets_"] [data-baseweb="select"],
-        div[data-testid="stMultiSelect"][data-key^="s15_assets_"] [data-baseweb="select"],
         div[data-testid="stMultiSelect"][data-key^="sd_assets_"] [data-baseweb="select"] {
             background: #1a1a18 !important;
             border: 1px dashed rgba(187,134,252,0.25) !important;
@@ -3517,7 +3512,6 @@ if check_password():
             min-height: 32px !important;
         }
         div[data-testid="stMultiSelect"][data-key^="s2_assets_"] [data-baseweb="select"] *,
-        div[data-testid="stMultiSelect"][data-key^="s15_assets_"] [data-baseweb="select"] *,
         div[data-testid="stMultiSelect"][data-key^="sd_assets_"] [data-baseweb="select"] * {
             color: #BB86FC !important;
             font-size: 0.7rem !important;
@@ -3601,10 +3595,6 @@ if check_password():
     if 'show_generate_button' not in st.session_state: st.session_state.show_generate_button = False
     if 'last_num_variations' not in st.session_state: st.session_state.last_num_variations = 1
     if 'show_image_generate_button' not in st.session_state: st.session_state.show_image_generate_button = False
-    if 's15_show_generate' not in st.session_state: st.session_state.s15_show_generate = False
-    if 's15_raw_prompt' not in st.session_state: st.session_state.s15_raw_prompt = ""
-    if 's15_opt_prompt' not in st.session_state: st.session_state.s15_opt_prompt = ""
-    if 's15_last_result' not in st.session_state: st.session_state.s15_last_result = None
     if 's2_last_result' not in st.session_state: st.session_state.s2_last_result = None
     if 's2_raw_prompt' not in st.session_state: st.session_state.s2_raw_prompt = ""
     if 's2_opt_prompt' not in st.session_state: st.session_state.s2_opt_prompt = ""
@@ -3682,6 +3672,57 @@ if check_password():
     if 'active_page' not in st.session_state: st.session_state.active_page = 'console'
     _restore_console_param_snapshot()
     if 'model_selector' not in st.session_state: st.session_state.model_selector = 'SEEDANCE 2.0'
+    if 'video_resolution' not in st.session_state: st.session_state.video_resolution = "720p"
+    if 'video_aspect_ratio' not in st.session_state: st.session_state.video_aspect_ratio = "adaptive"
+    if 'common_duration' not in st.session_state: st.session_state.common_duration = 15
+    if 's2_smart_duration' not in st.session_state: st.session_state.s2_smart_duration = False
+    if 's2_watermark' not in st.session_state: st.session_state.s2_watermark = False
+    if 'common_temperature' not in st.session_state: st.session_state.common_temperature = 0.5
+    if 'common_num_variations' not in st.session_state: st.session_state.common_num_variations = 1
+    if 'enable_audio' not in st.session_state: st.session_state.enable_audio = False
+    if 'en_s2' not in st.session_state: st.session_state.en_s2 = False
+    if 'en_s3' not in st.session_state: st.session_state.en_s3 = False
+    if 'v_lang' not in st.session_state: st.session_state.v_lang = LIST_LANGUAGES[0]
+    if 'v_emo' not in st.session_state: st.session_state.v_emo = LIST_EMOTIONS[0]
+    if 'v_timbre' not in st.session_state: st.session_state.v_timbre = "Normal"
+    if 'v_pace' not in st.session_state: st.session_state.v_pace = "Normal"
+    for _prefix in ["s"]:
+        for _shot_n in range(1, 4):
+            _k = f"{_prefix}{_shot_n}"
+            if f"{_k}_shot_type" not in st.session_state: st.session_state[f"{_k}_shot_type"] = LIST_SHOT_TYPES[0]
+            if f"{_k}_style" not in st.session_state: st.session_state[f"{_k}_style"] = LIST_STYLES[0]
+            if f"{_k}_mood" not in st.session_state: st.session_state[f"{_k}_mood"] = LIST_MOODS[0]
+            if f"{_k}_period" not in st.session_state: st.session_state[f"{_k}_period"] = LIST_PERIODS[0]
+            if f"{_k}_camera" not in st.session_state: st.session_state[f"{_k}_camera"] = LIST_CAMERAS[0]
+            if f"{_k}_lenses" not in st.session_state: st.session_state[f"{_k}_lenses"] = LIST_LENSES[0]
+            if f"{_k}_film_stock" not in st.session_state: st.session_state[f"{_k}_film_stock"] = LIST_FILM_STOCKS[0]
+            if f"{_k}_sensor" not in st.session_state: st.session_state[f"{_k}_sensor"] = LIST_SENSORS[0]
+            if f"{_k}_light_src" not in st.session_state: st.session_state[f"{_k}_light_src"] = LIST_LIGHTING_SOURCE[0]
+            if f"{_k}_light_dir" not in st.session_state: st.session_state[f"{_k}_light_dir"] = LIST_LIGHTING_DIRECTION[0]
+            if f"{_k}_light" not in st.session_state: st.session_state[f"{_k}_light"] = LIST_LIGHTING[0]
+            if f"{_k}_tb" not in st.session_state: st.session_state[f"{_k}_tb"] = 5
+            if f"{_k}_tc" not in st.session_state: st.session_state[f"{_k}_tc"] = 5
+            if f"{_k}_ts" not in st.session_state: st.session_state[f"{_k}_ts"] = 5
+            if f"{_k}_tt" not in st.session_state: st.session_state[f"{_k}_tt"] = 5
+            if f"{_k}_tbo" not in st.session_state: st.session_state[f"{_k}_tbo"] = 3
+            if f"{_k}_tsh" not in st.session_state: st.session_state[f"{_k}_tsh"] = 5
+            if f"{_k}_tv" not in st.session_state: st.session_state[f"{_k}_tv"] = 0
+            if f"{_k}_tca" not in st.session_state: st.session_state[f"{_k}_tca"] = 0
+            if f"{_k}_tg" not in st.session_state: st.session_state[f"{_k}_tg"] = 0
+            if f"{_k}_tso" not in st.session_state: st.session_state[f"{_k}_tso"] = 0
+            if f"{_k}_tmb" not in st.session_state: st.session_state[f"{_k}_tmb"] = 5
+            if f"{_k}_m1_type" not in st.session_state: st.session_state[f"{_k}_m1_type"] = LIST_MOVEMENTS[0]
+            if f"{_k}_m1_pace" not in st.session_state: st.session_state[f"{_k}_m1_pace"] = LIST_PACES[0]
+            if f"{_k}_m1_s" not in st.session_state: st.session_state[f"{_k}_m1_s"] = (0 if _shot_n == 1 else 5)
+            if f"{_k}_m1_e" not in st.session_state: st.session_state[f"{_k}_m1_e"] = (4 if _shot_n == 1 else 10)
+            if f"{_k}_m1_ca" not in st.session_state: st.session_state[f"{_k}_m1_ca"] = LIST_CAMERA_ANGLES[0]
+            if f"{_k}_m1_so" not in st.session_state: st.session_state[f"{_k}_m1_so"] = LIST_SUBJECT_ANGLES[0]
+            if f"{_k}_m2_type" not in st.session_state: st.session_state[f"{_k}_m2_type"] = LIST_MOVEMENTS[0]
+            if f"{_k}_m2_pace" not in st.session_state: st.session_state[f"{_k}_m2_pace"] = LIST_PACES[0]
+            if f"{_k}_m2_s" not in st.session_state: st.session_state[f"{_k}_m2_s"] = (4 if _shot_n == 1 else 10)
+            if f"{_k}_m2_e" not in st.session_state: st.session_state[f"{_k}_m2_e"] = (8 if _shot_n == 1 else 15)
+            if f"{_k}_m2_ca" not in st.session_state: st.session_state[f"{_k}_m2_ca"] = LIST_CAMERA_ANGLES[0]
+            if f"{_k}_m2_so" not in st.session_state: st.session_state[f"{_k}_m2_so"] = LIST_SUBJECT_ANGLES[0]
     if 'json_preview' not in st.session_state:
         st.session_state.json_preview = None  # None or JSON string
 
@@ -3725,17 +3766,17 @@ if check_password():
             data['lighting_direction'] = st.selectbox("Lighting Direction", LIST_LIGHTING_DIRECTION, key=f"{k}_light_dir")
             data['lighting'] = st.selectbox("Lighting Type", LIST_LIGHTING, key=f"{k}_light")
         with tab_tones:
-            data['tone_brightness'] = st.slider("Brightness", 0, 10, 5, key=f"{k}_tb")
-            data['tone_contrast'] = st.slider("Contrast", 0, 10, 5, key=f"{k}_tc")
-            data['tone_saturation'] = st.slider("Saturation", 0, 10, 5, key=f"{k}_ts")
-            data['tone_temperature'] = st.slider("Color Temp.", 0, 10, 5, key=f"{k}_tt")
-            data['tone_bokeh'] = st.slider("Background Bokeh", 0, 10, 3, key=f"{k}_tbo")
-            data['tone_sharpness'] = st.slider("Sharpness", 0, 10, 5, key=f"{k}_tsh")
-            data['tone_vignette'] = st.slider("Vignette", 0, 10, 0, key=f"{k}_tv")
-            data['tone_chromatic'] = st.slider("Chromatic Aberr.", 0, 10, 0, key=f"{k}_tca")
-            data['tone_grain'] = st.slider("Film Grain", 0, 10, 0, key=f"{k}_tg")
-            data['tone_softness'] = st.slider("Softness (Bloom)", 0, 10, 0, key=f"{k}_tso")
-            data['tone_motionblur'] = st.slider("Motion Blur", 0, 10, 5, key=f"{k}_tmb")
+            data['tone_brightness'] = st.slider("Brightness", 0, 10, key=f"{k}_tb")
+            data['tone_contrast'] = st.slider("Contrast", 0, 10, key=f"{k}_tc")
+            data['tone_saturation'] = st.slider("Saturation", 0, 10, key=f"{k}_ts")
+            data['tone_temperature'] = st.slider("Color Temp.", 0, 10, key=f"{k}_tt")
+            data['tone_bokeh'] = st.slider("Background Bokeh", 0, 10, key=f"{k}_tbo")
+            data['tone_sharpness'] = st.slider("Sharpness", 0, 10, key=f"{k}_tsh")
+            data['tone_vignette'] = st.slider("Vignette", 0, 10, key=f"{k}_tv")
+            data['tone_chromatic'] = st.slider("Chromatic Aberr.", 0, 10, key=f"{k}_tca")
+            data['tone_grain'] = st.slider("Film Grain", 0, 10, key=f"{k}_tg")
+            data['tone_softness'] = st.slider("Softness (Bloom)", 0, 10, key=f"{k}_tso")
+            data['tone_motionblur'] = st.slider("Motion Blur", 0, 10, key=f"{k}_tmb")
             st.markdown("**Color Grading**")
             default_colors = ["#1E90FF", "#FF4500", "#32CD32"]
             color_maps = []
@@ -3764,8 +3805,8 @@ if check_password():
         c1, c2, c3, c4 = st.columns([2, 1.5, 1, 1], gap="medium")
         with c1: data['m1_type'] = st.selectbox("Movement Type", LIST_MOVEMENTS, key=f"{k}_m1_type")
         with c2: data['m1_pace'] = st.selectbox("Pace", LIST_PACES, key=f"{k}_m1_pace")
-        with c3: data['m1_start'] = st.number_input("Start (s)", min_value=0, max_value=15, value=0 if shot_num==1 else 5, key=f"{k}_m1_s")
-        with c4: data['m1_end'] = st.number_input("End (s)", min_value=0, max_value=15, value=4 if shot_num==1 else 10, key=f"{k}_m1_e")
+        with c3: data['m1_start'] = st.number_input("Start (s)", min_value=0, max_value=15, key=f"{k}_m1_s")
+        with c4: data['m1_end'] = st.number_input("End (s)", min_value=0, max_value=15, key=f"{k}_m1_e")
         c8, c9 = st.columns([1, 1], gap="medium")
         with c8: data['m1_angle'] = st.selectbox("Camera Angle", LIST_CAMERA_ANGLES, key=f"{k}_m1_ca")
         with c9: data['m1_subj'] = st.selectbox("Subject Orientation", LIST_SUBJECT_ANGLES, key=f"{k}_m1_so")
@@ -3774,8 +3815,8 @@ if check_password():
             c1b, c2b, c3b, c4b = st.columns([2, 1.5, 1, 1], gap="medium")
             with c1b: data['m2_type'] = st.selectbox("Movement Type", LIST_MOVEMENTS, key=f"{k}_m2_type")
             with c2b: data['m2_pace'] = st.selectbox("Pace", LIST_PACES, key=f"{k}_m2_pace")
-            with c3b: data['m2_start'] = st.number_input("Start (s)", min_value=0, max_value=15, value=4 if shot_num==1 else 10, key=f"{k}_m2_s")
-            with c4b: data['m2_end'] = st.number_input("End (s)", min_value=0, max_value=15, value=8 if shot_num==1 else 15, key=f"{k}_m2_e")
+            with c3b: data['m2_start'] = st.number_input("Start (s)", min_value=0, max_value=15, key=f"{k}_m2_s")
+            with c4b: data['m2_end'] = st.number_input("End (s)", min_value=0, max_value=15, key=f"{k}_m2_e")
             c8b, c9b = st.columns([1, 1], gap="medium")
             with c8b: data['m2_angle'] = st.selectbox("Camera Angle (End)", LIST_CAMERA_ANGLES, key=f"{k}_m2_ca")
             with c9b: data['m2_subj'] = st.selectbox("Subject Orientation (End)", LIST_SUBJECT_ANGLES, key=f"{k}_m2_so")
@@ -3826,29 +3867,6 @@ if check_password():
                 "details": kwargs.get("audio_details", {}),
             }
 
-        elif model_sel == "SEEDANCE 1.5":
-            settings["scene_description"] = kwargs.get("action_desc", "")
-            settings["workflow"] = {
-                "image_usage": kwargs.get("image_usage", "auto"),
-            }
-            settings["technical"] = {
-                "resolution": kwargs.get("resolution", "1080p"),
-                "aspect_ratio": kwargs.get("aspect_ratio", "16:9"),
-                "duration_sec": kwargs.get("duration", 12),
-                "processing_mode": kwargs.get("gen_mode", "Standard (Online)"),
-            }
-            settings["creativity"] = {
-                "temperature": kwargs.get("temperature", 0.5),
-                "seeds": kwargs.get("seeds", []),
-            }
-            settings["files"] = {
-                "images": kwargs.get("num_imgs", 0),
-            }
-            settings["audio_generation"] = {
-                "enabled": kwargs.get("gen_audio", False),
-                "details": kwargs.get("audio_details", {}),
-            }
-
         elif model_sel == "SEEDREAM 5.0":
             settings["prompt"] = kwargs.get("prompt", "")
             settings["style"] = {
@@ -3877,7 +3895,7 @@ if check_password():
                 "reference_images": kwargs.get("num_refs", 0),
             }
 
-        # Cinematography / shots data (Seedance 1.5 & 2.0)
+        # Cinematography / shots data (Seedance 2.0)
         shots = kwargs.get("shots_data", [])
         if shots:
             settings["cinematography"] = []
@@ -6170,6 +6188,7 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
             val = st.session_state.gal_nav
             if val == "Console":
                 st.session_state.gal_nav = "Gallery"
+                st.session_state["_console_was_away"] = True
                 st.session_state.active_page = "console"
             elif val == "Projects":
                 st.session_state.gal_nav = "Gallery"
@@ -6752,6 +6771,7 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
             val = st.session_state.proj_nav
             if val == "Console":
                 st.session_state.proj_nav = "Projects"
+                st.session_state["_console_was_away"] = True
                 st.session_state.active_page = "console"
             elif val == "Gallery":
                 st.session_state.proj_nav = "Projects"
@@ -7118,6 +7138,7 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
             val = st.session_state.assets_nav
             if val == "Console":
                 st.session_state.assets_nav = "Assets"
+                st.session_state["_console_was_away"] = True
                 st.session_state.active_page = "console"
             elif val == "Projects":
                 st.session_state.assets_nav = "Assets"
@@ -7269,13 +7290,7 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
                         if _s2fo:
                             _cached_imgs = [_s2fo]
                         else:
-                            _ff15 = st.session_state.get("_cached_s15_first_frame")
-                            _lf15 = st.session_state.get("_cached_s15_last_frame")
-                            _s15l = list(st.session_state.get("_cached_s15_images") or [])
-                            if _ff15 or _lf15:
-                                _cached_imgs = [x for x in (_ff15, _lf15) if x]
-                            elif _s15l:
-                                _cached_imgs = _s15l
+                            _cached_imgs = []
                 _cached_vids = list(st.session_state.get("_cached_s2_videos") or [])
                 _cached_auds = list(st.session_state.get("_cached_s2_audio") or [])
                 for _i, _f in enumerate(_cached_imgs):
@@ -7405,6 +7420,7 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
             val = st.session_state.refs_nav
             if val == "Console":
                 st.session_state.refs_nav = "References"
+                st.session_state["_console_was_away"] = True
                 st.session_state.active_page = "console"
             elif val == "Projects":
                 st.session_state.refs_nav = "References"
@@ -9473,6 +9489,7 @@ try { inp.blur(); } catch (e3) {}
             val = st.session_state.sbi_nav
             if val == "Console":
                 st.session_state.sbi_nav = "Storyboard"
+                st.session_state["_console_was_away"] = True
                 st.session_state.active_page = "console"
             elif val == "Projects":
                 st.session_state.sbi_nav = "Storyboard"
@@ -9521,6 +9538,7 @@ try { inp.blur(); } catch (e3) {}
             val = st.session_state.sbv_nav
             if val == "Console":
                 st.session_state.sbv_nav = "Editing"
+                st.session_state["_console_was_away"] = True
                 st.session_state.active_page = "console"
             elif val == "Projects":
                 st.session_state.sbv_nav = "Editing"
@@ -9573,20 +9591,6 @@ try { inp.blur(); } catch (e3) {}
         gen_audio = False
         audio_details_dict = {}
         s2_images = s2_videos = s2_audio = []
-        s15_images = []
-        s15_num_imgs = s15_total_files = 0
-        s15_action_desc = ""
-        s15_shots_data = []
-        s15_image_usage = "auto"
-        s15_duration = 12
-        s15_temperature = 0.5
-        s15_resolution = "1080p"
-        s15_aspect_ratio = "16:9"
-        s15_gen_mode = "Standard (Online)"
-        s15_gen_audio = False
-        s15_audio_details = {}
-        s15_videos = []
-        s15_audio = []
         sd_refs = []
         sd_prompt = ""
         sd_style = "None (Raw Prompt)"
@@ -9600,35 +9604,40 @@ try { inp.blur(); } catch (e3) {}
         if st.session_state.get("_console_reset_pending"):
             del st.session_state["_console_reset_pending"]
             _reset_keys = [
-                "action_desc_s2", "s15_action_desc", "sd_prompt_input",
-                "s2_opt_prompt", "s2_raw_prompt", "s15_opt_prompt", "s15_raw_prompt",
+                "action_desc_s2", "sd_prompt_input",
+                "s2_opt_prompt", "s2_raw_prompt",
                 "sd_opt_prompt", "sd_raw_prompt",
                 "json_preview", "_json_dict",
-                "s2_last_result", "s15_last_result", "sd_last_result",
+                "s2_last_result", "sd_last_result",
                 "show_generate_button", "_preview_feedback",
-                "_do_preview_s2", "_do_preview_s15", "_do_preview_sd",
-                "_do_generate_s2", "_do_generate_s15", "_do_generate_sd",
+                "_do_preview_s2", "_do_preview_sd",
+                "_do_generate_s2", "_do_generate_sd",
                 "canvas_prompt_editor",
-                "video_resolution", "video_aspect_ratio", "common_duration", "gen_mode_selector",
-                "s15_resolution", "s15_aspect_ratio", "s15_duration", "s15_gen_mode",
+                "video_resolution", "video_aspect_ratio", "common_duration", "gen_mode_selector", "s2_gen_mode",
                 "s2_workflow",
-                "common_temperature", "s15_temperature",
-                "common_num_variations", "s15_num_variations",
-                "enable_audio", "s15_enable_audio",
+                "common_temperature",
+                "common_num_variations",
+                "enable_audio",
                 "sd_optimize", "sd_resolution", "sd_ar_select",
                 "_cached_s2_images", "_cached_s2_videos", "_cached_s2_audio",
-                "_cached_s15_images", "_cached_sd_refs",
+                "_cached_sd_refs",
                 "_cached_s2_first_frame", "_cached_s2_last_frame", "_cached_s2_first_only",
-                "_cached_s15_first_frame", "_cached_s15_last_frame",
                 "_s2_img_saved_names", "_s2_vid_saved_names", "_s2_aud_saved_names",
-                "_s15_img_saved_names", "_sd_ref_saved_names",
+                "_sd_ref_saved_names",
                 "_console_ref_tag_map",
+                "_persist_s2_assets_images",
+                "_persist_s2_assets_videos",
+                "_persist_s2_assets_audio",
+                "_persist_s2_assets_first_frame",
+                "_persist_s2_assets_last_frame",
+                "_persist_s2_assets_first_only",
+                "_persist_sd_assets_refs",
+                "_console_was_away",
             ]
             for k in _reset_keys:
                 st.session_state.pop(k, None)
             for i in range(10):
                 st.session_state.pop(f"seed_input_{i}", None)
-                st.session_state.pop(f"s15_seed_{i}", None)
             _save_console_param_snapshot()
             st.rerun()
 
@@ -9636,7 +9645,7 @@ try { inp.blur(); } catch (e3) {}
 
         with left_col:
             with st.expander("MODELS", expanded=False):
-                st.radio("Model", ["SEEDANCE 1.5", "SEEDANCE 2.0", "SEEDREAM 5.0"], key="model_selector", label_visibility="collapsed", horizontal=False)
+                st.radio("Model", ["SEEDANCE 2.0", "SEEDREAM 5.0"], key="model_selector", label_visibility="collapsed", horizontal=False)
 
             with st.expander("WORKFLOW", expanded=False):
                 if model_sel == "SEEDANCE 2.0":
@@ -9664,6 +9673,11 @@ try { inp.blur(); } catch (e3) {}
                             key="s2_first_frame",
                             help="PNG, JPG, JPEG",
                         )
+                        if _s2_ff_raw is not None:
+                            _s2_ff_raw = CachedUploadedFile(_s2_ff_raw.name, _s2_ff_raw.getvalue(), _s2_ff_raw.type)
+                            st.session_state["_persisted_img_1"] = _s2_ff_raw
+                        elif "_persisted_img_1" in st.session_state:
+                            _s2_ff_raw = st.session_state["_persisted_img_1"]
                         if _s2_ff_raw:
                             st.session_state["_cached_s2_first_frame"] = CachedUploadedFile(
                                 _s2_ff_raw.name, _s2_ff_raw.getvalue(), _s2_ff_raw.type
@@ -9678,12 +9692,20 @@ try { inp.blur(); } catch (e3) {}
                         _img_assets = [a for a in _cat if a["type"] == "image"]
                         if _img_assets and not s2_first_frame:
                             _ff_opts = ["(none)"] + [f"{a['name']} ({a['size_str']})" for a in _img_assets]
+                            _ff_default_idx = 0
+                            _ff_persist_val = st.session_state.get("_persist_s2_assets_first_frame")
+                            if _ff_persist_val and _ff_persist_val in _ff_opts:
+                                _ff_default_idx = _ff_opts.index(_ff_persist_val)
                             _ff_sel = st.selectbox("Or pick from Assets", _ff_opts,
+                                                   index=_ff_default_idx,
                                                    key="s2_assets_first_frame", label_visibility="collapsed")
                             if _ff_sel != "(none)":
+                                st.session_state["_persist_s2_assets_first_frame"] = _ff_sel
                                 _a = next((x for x in _img_assets if f"{x['name']} ({x['size_str']})" == _ff_sel), None)
                                 if _a and os.path.exists(_a["path"]):
                                     s2_first_frame = AssetFile(_a["path"], _a["name"], _a["mime"])
+                            else:
+                                st.session_state.pop("_persist_s2_assets_first_frame", None)
                         st.markdown(
                             '<p style="color:#FF9800; font-size:0.75rem; font-weight:600; margin:0.5rem 0 0.25rem; '
                             'letter-spacing:0.08em; text-transform:uppercase;">Last Frame</p>',
@@ -9696,6 +9718,11 @@ try { inp.blur(); } catch (e3) {}
                             key="s2_last_frame",
                             help="PNG, JPG, JPEG",
                         )
+                        if _s2_lf_raw is not None:
+                            _s2_lf_raw = CachedUploadedFile(_s2_lf_raw.name, _s2_lf_raw.getvalue(), _s2_lf_raw.type)
+                            st.session_state["_persisted_img_2"] = _s2_lf_raw
+                        elif "_persisted_img_2" in st.session_state:
+                            _s2_lf_raw = st.session_state["_persisted_img_2"]
                         if _s2_lf_raw:
                             st.session_state["_cached_s2_last_frame"] = CachedUploadedFile(
                                 _s2_lf_raw.name, _s2_lf_raw.getvalue(), _s2_lf_raw.type
@@ -9705,12 +9732,20 @@ try { inp.blur(); } catch (e3) {}
                             st.caption(f"Loaded from session: {s2_last_frame.name}")
                         if _img_assets and not s2_last_frame:
                             _lf_opts = ["(none)"] + [f"{a['name']} ({a['size_str']})" for a in _img_assets]
+                            _lf_default_idx = 0
+                            _lf_persist_val = st.session_state.get("_persist_s2_assets_last_frame")
+                            if _lf_persist_val and _lf_persist_val in _lf_opts:
+                                _lf_default_idx = _lf_opts.index(_lf_persist_val)
                             _lf_sel = st.selectbox("Or pick from Assets", _lf_opts,
+                                                   index=_lf_default_idx,
                                                    key="s2_assets_last_frame", label_visibility="collapsed")
                             if _lf_sel != "(none)":
+                                st.session_state["_persist_s2_assets_last_frame"] = _lf_sel
                                 _a = next((x for x in _img_assets if f"{x['name']} ({x['size_str']})" == _lf_sel), None)
                                 if _a and os.path.exists(_a["path"]):
                                     s2_last_frame = AssetFile(_a["path"], _a["name"], _a["mime"])
+                            else:
+                                st.session_state.pop("_persist_s2_assets_last_frame", None)
                         # Build images list: first frame FIRST, last frame SECOND (order matters for API)
                         s2_images = []
                         if s2_first_frame:
@@ -9745,6 +9780,11 @@ try { inp.blur(); } catch (e3) {}
                             key="s2_first_only",
                             help="PNG, JPG, JPEG",
                         )
+                        if _s2_fo_raw is not None:
+                            _s2_fo_raw = CachedUploadedFile(_s2_fo_raw.name, _s2_fo_raw.getvalue(), _s2_fo_raw.type)
+                            st.session_state["_persisted_img_3"] = _s2_fo_raw
+                        elif "_persisted_img_3" in st.session_state:
+                            _s2_fo_raw = st.session_state["_persisted_img_3"]
                         if _s2_fo_raw:
                             st.session_state["_cached_s2_first_only"] = CachedUploadedFile(
                                 _s2_fo_raw.name, _s2_fo_raw.getvalue(), _s2_fo_raw.type
@@ -9759,12 +9799,20 @@ try { inp.blur(); } catch (e3) {}
                         _img_assets = [a for a in _cat if a["type"] == "image"]
                         if _img_assets and not s2_first_only:
                             _fo_opts = ["(none)"] + [f"{a['name']} ({a['size_str']})" for a in _img_assets]
+                            _fo_default_idx = 0
+                            _fo_persist_val = st.session_state.get("_persist_s2_assets_first_only")
+                            if _fo_persist_val and _fo_persist_val in _fo_opts:
+                                _fo_default_idx = _fo_opts.index(_fo_persist_val)
                             _fo_sel = st.selectbox("Or pick from Assets", _fo_opts,
+                                                   index=_fo_default_idx,
                                                    key="s2_assets_first_only", label_visibility="collapsed")
                             if _fo_sel != "(none)":
+                                st.session_state["_persist_s2_assets_first_only"] = _fo_sel
                                 _a = next((x for x in _img_assets if f"{x['name']} ({x['size_str']})" == _fo_sel), None)
                                 if _a and os.path.exists(_a["path"]):
                                     s2_first_only = AssetFile(_a["path"], _a["name"], _a["mime"])
+                            else:
+                                st.session_state.pop("_persist_s2_assets_first_only", None)
                         s2_images = [s2_first_only] if s2_first_only else []
                         s2_videos = []
                         s2_audio = []
@@ -9787,7 +9835,16 @@ try { inp.blur(); } catch (e3) {}
                             key="s2_images",
                             help="PNG, JPG, JPEG",
                         )
-                        _s2_img_list = _materialize_multi_file_upload(_s2_img_raw)
+                        if _s2_img_raw:
+                            _s2_img_list = [
+                                CachedUploadedFile(f.name, f.getvalue(), f.type)
+                                for f in _materialize_multi_file_upload(_s2_img_raw)
+                            ]
+                            st.session_state["_persisted_img_4"] = _s2_img_list
+                        elif "_persisted_img_4" in st.session_state:
+                            _s2_img_list = list(st.session_state["_persisted_img_4"])
+                        else:
+                            _s2_img_list = []
                         if _s2_img_list:
                             st.session_state["_cached_s2_images"] = [
                                 CachedUploadedFile(f.name, f.getvalue(), f.type) for f in _s2_img_list
@@ -9813,10 +9870,15 @@ try { inp.blur(); } catch (e3) {}
                             _img_selected = st.multiselect(
                                 "From Assets (images)",
                                 options=list(_img_opts.keys()),
+                                default=[x for x in st.session_state.get("_persist_s2_assets_images", []) if x in _img_opts],
                                 key="s2_assets_images",
                                 label_visibility="collapsed",
                                 placeholder="＋ Pick images from Assets..."
                             )
+                            if _img_selected:
+                                st.session_state["_persist_s2_assets_images"] = _img_selected
+                            elif not _img_selected and "s2_assets_images" in st.session_state:
+                                st.session_state.pop("_persist_s2_assets_images", None)
                             _img_asset_files = []
                             for _lab in _img_selected:
                                 _aid = _img_opts[_lab]
@@ -9831,7 +9893,16 @@ try { inp.blur(); } catch (e3) {}
                             key="s2_videos",
                             help="MP4, MOV, MPEG4",
                         )
-                        _s2_vid_list = _materialize_multi_file_upload(_s2_vid_raw)
+                        if _s2_vid_raw:
+                            _s2_vid_list = [
+                                CachedUploadedFile(f.name, f.getvalue(), f.type)
+                                for f in _materialize_multi_file_upload(_s2_vid_raw)
+                            ]
+                            st.session_state["_persisted_vid_1"] = _s2_vid_list
+                        elif "_persisted_vid_1" in st.session_state:
+                            _s2_vid_list = list(st.session_state["_persisted_vid_1"])
+                        else:
+                            _s2_vid_list = []
                         if _s2_vid_list:
                             st.session_state["_cached_s2_videos"] = [
                                 CachedUploadedFile(f.name, f.getvalue(), f.type) for f in _s2_vid_list
@@ -9853,10 +9924,15 @@ try { inp.blur(); } catch (e3) {}
                             _vid_selected = st.multiselect(
                                 "From Assets (videos)",
                                 options=list(_vid_opts.keys()),
+                                default=[x for x in st.session_state.get("_persist_s2_assets_videos", []) if x in _vid_opts],
                                 key="s2_assets_videos",
                                 label_visibility="collapsed",
                                 placeholder="＋ Pick videos from Assets..."
                             )
+                            if _vid_selected:
+                                st.session_state["_persist_s2_assets_videos"] = _vid_selected
+                            elif not _vid_selected and "s2_assets_videos" in st.session_state:
+                                st.session_state.pop("_persist_s2_assets_videos", None)
                             _vid_asset_files = []
                             for _lab in _vid_selected:
                                 _aid = _vid_opts[_lab]
@@ -9871,7 +9947,16 @@ try { inp.blur(); } catch (e3) {}
                             key="s2_audio",
                             help="MP3",
                         )
-                        _s2_aud_list = _materialize_multi_file_upload(_s2_aud_raw)
+                        if _s2_aud_raw:
+                            _s2_aud_list = [
+                                CachedUploadedFile(f.name, f.getvalue(), f.type)
+                                for f in _materialize_multi_file_upload(_s2_aud_raw)
+                            ]
+                            st.session_state["_persisted_aud_1"] = _s2_aud_list
+                        elif "_persisted_aud_1" in st.session_state:
+                            _s2_aud_list = list(st.session_state["_persisted_aud_1"])
+                        else:
+                            _s2_aud_list = []
                         if _s2_aud_list:
                             st.session_state["_cached_s2_audio"] = [
                                 CachedUploadedFile(f.name, f.getvalue(), f.type) for f in _s2_aud_list
@@ -9893,10 +9978,15 @@ try { inp.blur(); } catch (e3) {}
                             _aud_selected = st.multiselect(
                                 "From Assets (audio)",
                                 options=list(_aud_opts.keys()),
+                                default=[x for x in st.session_state.get("_persist_s2_assets_audio", []) if x in _aud_opts],
                                 key="s2_assets_audio",
                                 label_visibility="collapsed",
                                 placeholder="＋ Pick audio from Assets..."
                             )
+                            if _aud_selected:
+                                st.session_state["_persist_s2_assets_audio"] = _aud_selected
+                            elif not _aud_selected and "s2_assets_audio" in st.session_state:
+                                st.session_state.pop("_persist_s2_assets_audio", None)
                             _aud_asset_files = []
                             for _lab in _aud_selected:
                                 _aid = _aud_opts[_lab]
@@ -9986,169 +10076,6 @@ try { inp.blur(); } catch (e3) {}
                                     st.markdown(st.session_state[f"vision_report_{i}"])
                                     vision_context_list.append(st.session_state[f"vision_report_{i}"])
                         st.session_state.vision_context = vision_context_list
-                elif model_sel == "SEEDANCE 1.5":
-                    s15_workflow = st.selectbox(
-                        "Creation mode",
-                        ["Text-to-video", "Image-to-video (first frame)", "Image-to-video (first + last frame)"],
-                        key="s15_workflow",
-                    )
-                    s15_workflow_val = st.session_state.get("s15_workflow", "Text-to-video")
-                    s15_is_first_last = "first + last" in s15_workflow_val
-                    s15_is_first_only = "first frame)" in s15_workflow_val and not s15_is_first_last
-
-                    if s15_is_first_last:
-                        st.markdown(
-                            '<p style="color:#FFEB3B; font-size:0.75rem; font-weight:600; margin:0.5rem 0 0.25rem; '
-                            'letter-spacing:0.08em; text-transform:uppercase;">First Frame</p>',
-                            unsafe_allow_html=True,
-                        )
-                        _s15_ff_raw = st.file_uploader(
-                            "Opening frame",
-                            type=['png', 'jpg', 'jpeg'],
-                            accept_multiple_files=False,
-                            key="s15_first_frame",
-                            help="PNG, JPG, JPEG",
-                        )
-                        if _s15_ff_raw:
-                            st.session_state["_cached_s15_first_frame"] = CachedUploadedFile(
-                                _s15_ff_raw.name, _s15_ff_raw.getvalue(), _s15_ff_raw.type
-                            )
-                        s15_first_frame = _s15_ff_raw if _s15_ff_raw else st.session_state.get("_cached_s15_first_frame")
-                        if not _s15_ff_raw and s15_first_frame:
-                            st.caption(f"Loaded from session: {s15_first_frame.name}")
-                        _cat = load_asset_catalog()
-                        _active_proj = get_active_project_id()
-                        if _active_proj:
-                            _cat = [a for a in _cat if a.get("project_id") == _active_proj]
-                        _img_assets = [a for a in _cat if a["type"] == "image"]
-                        if _img_assets and not s15_first_frame:
-                            _ff_opts = ["(none)"] + [f"{a['name']} ({a['size_str']})" for a in _img_assets]
-                            _ff_sel = st.selectbox("Or pick from Assets", _ff_opts,
-                                                   key="s15_assets_first_frame", label_visibility="collapsed")
-                            if _ff_sel != "(none)":
-                                _a = next((x for x in _img_assets if f"{x['name']} ({x['size_str']})" == _ff_sel), None)
-                                if _a and os.path.exists(_a["path"]):
-                                    s15_first_frame = AssetFile(_a["path"], _a["name"], _a["mime"])
-                        st.markdown(
-                            '<p style="color:#FF9800; font-size:0.75rem; font-weight:600; margin:0.5rem 0 0.25rem; '
-                            'letter-spacing:0.08em; text-transform:uppercase;">Last Frame</p>',
-                            unsafe_allow_html=True,
-                        )
-                        _s15_lf_raw = st.file_uploader(
-                            "Closing frame",
-                            type=['png', 'jpg', 'jpeg'],
-                            accept_multiple_files=False,
-                            key="s15_last_frame",
-                            help="PNG, JPG, JPEG",
-                        )
-                        if _s15_lf_raw:
-                            st.session_state["_cached_s15_last_frame"] = CachedUploadedFile(
-                                _s15_lf_raw.name, _s15_lf_raw.getvalue(), _s15_lf_raw.type
-                            )
-                        s15_last_frame = _s15_lf_raw if _s15_lf_raw else st.session_state.get("_cached_s15_last_frame")
-                        if not _s15_lf_raw and s15_last_frame:
-                            st.caption(f"Loaded from session: {s15_last_frame.name}")
-                        if _img_assets and not s15_last_frame:
-                            _lf_opts = ["(none)"] + [f"{a['name']} ({a['size_str']})" for a in _img_assets]
-                            _lf_sel = st.selectbox("Or pick from Assets", _lf_opts,
-                                                   key="s15_assets_last_frame", label_visibility="collapsed")
-                            if _lf_sel != "(none)":
-                                _a = next((x for x in _img_assets if f"{x['name']} ({x['size_str']})" == _lf_sel), None)
-                                if _a and os.path.exists(_a["path"]):
-                                    s15_last_frame = AssetFile(_a["path"], _a["name"], _a["mime"])
-                        s15_images = []
-                        if s15_first_frame:
-                            s15_images.append(s15_first_frame)
-                        if s15_last_frame:
-                            s15_images.append(s15_last_frame)
-                        s15_num_imgs = len(s15_images)
-                        s15_total_files = s15_num_imgs
-                        s15_image_usage = "first_last_frame"
-
-                        if s15_first_frame and not s15_last_frame:
-                            st.warning("Upload a Last Frame image.")
-                        elif not s15_first_frame and s15_last_frame:
-                            st.warning("Upload a First Frame image.")
-
-                    elif s15_is_first_only:
-                        _s15_img_raw = st.file_uploader(
-                            "First Frame Image",
-                            type=['png', 'jpg', 'jpeg'],
-                            accept_multiple_files=False,
-                            key="s15_images_single",
-                            help="PNG, JPG, JPEG",
-                        )
-                        if _s15_img_raw:
-                            st.session_state["_cached_s15_images"] = [
-                                CachedUploadedFile(_s15_img_raw.name, _s15_img_raw.getvalue(), _s15_img_raw.type)
-                            ]
-                            if "_s15_img_saved_names" not in st.session_state:
-                                st.session_state["_s15_img_saved_names"] = set()
-                            for f in (_s15_img_raw,):
-                                if f.name not in st.session_state["_s15_img_saved_names"]:
-                                    _result = add_to_assets(uploaded_file=f)
-                                    if _result:
-                                        st.session_state["_s15_img_saved_names"].add(f.name)
-                        _s15_from_cache = list(st.session_state.get("_cached_s15_images") or [])
-                        s15_images = _s15_img_raw if _s15_img_raw else (_s15_from_cache[0] if _s15_from_cache else None)
-                        if not _s15_img_raw and s15_images:
-                            st.caption(f"Loaded from session: {s15_images.name}")
-                        _cat = load_asset_catalog()
-                        _active_proj = get_active_project_id()
-                        if _active_proj:
-                            _cat = [a for a in _cat if a.get("project_id") == _active_proj]
-                        _img_assets = [a for a in _cat if a["type"] == "image"]
-                        _s15_af = []
-                        if _img_assets:
-                            _s15_opts = {f"{a['name']} ({a['size_str']})": a["id"] for a in _img_assets}
-                            _s15_sel = st.multiselect("From Assets", options=list(_s15_opts.keys()),
-                                                      key="s15_assets_images", label_visibility="collapsed",
-                                                      placeholder="＋ Pick from Assets...")
-                            for _lab in _s15_sel:
-                                _aid = _s15_opts[_lab]
-                                _a = next((x for x in _img_assets if x["id"] == _aid), None)
-                                if _a and os.path.exists(_a["path"]):
-                                    _s15_af.append(AssetFile(_a["path"], _a["name"], _a["mime"]))
-                        s15_images = ([s15_images] if s15_images else []) + _s15_af
-                        s15_num_imgs = len(s15_images)
-                        s15_total_files = s15_num_imgs
-                        s15_image_usage = "first_frame"
-
-                    else:
-                        # Text-to-video
-                        s15_images = []
-                        s15_num_imgs = 0
-                        s15_total_files = 0
-                        s15_image_usage = "auto"
-
-                    # ── Asset tags info (after uploaders + From Assets) ──
-                    if s15_num_imgs > 0:
-                        st.info(f"Available: {', '.join([f'@Image {i+1}' for i in range(s15_num_imgs)])}")
-
-                    if s15_num_imgs > 0:
-                        s15_btn_cols = st.columns(min(s15_num_imgs, 4))
-                        s15_vision_list = []
-                        for i, img_file in enumerate(s15_images or []):
-                            if s15_is_first_last:
-                                frame_label = "First Frame" if i == 0 else "Last Frame"
-                            else:
-                                frame_label = f"@Image {i+1}"
-                            with s15_btn_cols[i % 4]:
-                                if st.button(f"Analyze {frame_label}", key=f"s15_analyze_{i}"):
-                                    with st.spinner(f"Processing {frame_label}..."):
-                                        report = analyze_cinematography(img_file, frame_label)
-                                        st.session_state[f"s15_vision_report_{i}"] = report
-                        for i in range(s15_num_imgs):
-                            if f"s15_vision_report_{i}" in st.session_state:
-                                s15_vision_list.append(st.session_state[f"s15_vision_report_{i}"])
-                        st.session_state.s15_vision_context = s15_vision_list
-                    _s15_ref_tag_map = {}
-                    if s15_num_imgs > 0:
-                        for _i, _f in enumerate(s15_images or []):
-                            _n = getattr(_f, "name", "") or ""
-                            if _n:
-                                _s15_ref_tag_map[_n] = f"@Image {_i + 1}"
-                    st.session_state["_console_ref_tag_map"] = _s15_ref_tag_map
                 else:
                     _sd_refs_raw = st.file_uploader(
                         "Reference images (Optional)",
@@ -10157,7 +10084,16 @@ try { inp.blur(); } catch (e3) {}
                         key="sd_refs_upload",
                         help="PNG, JPG, JPEG",
                     )
-                    _sd_refs_list = _materialize_multi_file_upload(_sd_refs_raw)
+                    if _sd_refs_raw:
+                        _sd_refs_list = [
+                            CachedUploadedFile(f.name, f.getvalue(), f.type)
+                            for f in _materialize_multi_file_upload(_sd_refs_raw)
+                        ]
+                        st.session_state["_persisted_img_8"] = _sd_refs_list
+                    elif "_persisted_img_8" in st.session_state:
+                        _sd_refs_list = list(st.session_state["_persisted_img_8"])
+                    else:
+                        _sd_refs_list = []
                     if _sd_refs_list:
                         st.session_state["_cached_sd_refs"] = [
                             CachedUploadedFile(f.name, f.getvalue(), f.type) for f in _sd_refs_list
@@ -10180,8 +10116,13 @@ try { inp.blur(); } catch (e3) {}
                     if _img_assets:
                         _sd_opts = {f"{a['name']} ({a['size_str']})": a["id"] for a in _img_assets}
                         _sd_sel = st.multiselect("From Assets", options=list(_sd_opts.keys()),
+                                                 default=[x for x in st.session_state.get("_persist_sd_assets_refs", []) if x in _sd_opts],
                                                  key="sd_assets_refs", label_visibility="collapsed",
                                                  placeholder="＋ Pick from Assets...")
+                        if _sd_sel:
+                            st.session_state["_persist_sd_assets_refs"] = _sd_sel
+                        elif not _sd_sel and "sd_assets_refs" in st.session_state:
+                            st.session_state.pop("_persist_sd_assets_refs", None)
                         _sd_af = []
                         for _lab in _sd_sel:
                             _aid = _sd_opts[_lab]
@@ -10203,11 +10144,13 @@ try { inp.blur(); } catch (e3) {}
 
             if st.button("PROJECTS", key="top_projects_btn", use_container_width=True):
                 _save_console_param_snapshot()
+                st.session_state["_console_was_away"] = True
                 st.session_state.active_page = "projects"
                 st.rerun()
 
             if st.button("ASSETS", key="top_assets_btn", use_container_width=True):
                 _save_console_param_snapshot()
+                st.session_state["_console_was_away"] = True
                 st.session_state.active_page = "assets"
                 st.rerun()
 
@@ -10215,8 +10158,6 @@ try { inp.blur(); } catch (e3) {}
 
             if model_sel == "SEEDANCE 2.0":
                 preview_clicked = st.button("PREVIEW PROMPT", use_container_width=True, key="preview_prompt_btn")
-            elif model_sel == "SEEDANCE 1.5":
-                preview_clicked = st.button("PREVIEW PROMPT (S1.5)", use_container_width=True, key="s15_preview_btn")
             else:
                 preview_clicked = st.button("PREVIEW PROMPT (Seedream)", use_container_width=True, key="sd_preview_btn")
 
@@ -10230,8 +10171,6 @@ try { inp.blur(); } catch (e3) {}
         with center_col:
             if model_sel == "SEEDANCE 2.0":
                 action_desc = st.text_area(" ", placeholder="Describe the scene...", key="action_desc_s2", height=100, label_visibility="collapsed")
-            elif model_sel == "SEEDANCE 1.5":
-                s15_action_desc = st.text_area(" ", placeholder="Describe the scene...", key="s15_action_desc", height=100, label_visibility="collapsed")
             else:
                 sd_prompt = st.text_area(" ", placeholder="Describe your vision...", height=100, key="sd_prompt_input", label_visibility="collapsed")
             if st.button("RESET", key="console_reset_btn", use_container_width=True):
@@ -10239,18 +10178,16 @@ try { inp.blur(); } catch (e3) {}
                 st.rerun()
 
             with st.expander("CINEMATOGRAPHY", expanded=False):
-                if model_sel in ("SEEDANCE 1.5", "SEEDANCE 2.0"):
+                if model_sel == "SEEDANCE 2.0":
                     shot_tabs = st.tabs(["SHOT 1 (Base)", "SHOT 2 (Optional)", "SHOT 3 (Optional)"])
                     shots_data = []
-                    kp = "s15_" if model_sel == "SEEDANCE 1.5" else "s"
-                    with shot_tabs[0]: shots_data.append(render_shot_panel(1, key_prefix=kp))
+                    with shot_tabs[0]: shots_data.append(render_shot_panel(1, key_prefix="s"))
                     with shot_tabs[1]:
-                        if st.toggle("Enable Shot 2", key=("s15_en_s2" if model_sel == "SEEDANCE 1.5" else "en_s2")):
-                            shots_data.append(render_shot_panel(2, key_prefix=kp))
+                        if st.toggle("Enable Shot 2", key="en_s2"):
+                            shots_data.append(render_shot_panel(2, key_prefix="s"))
                     with shot_tabs[2]:
-                        if st.toggle("Enable Shot 3", key=("s15_en_s3" if model_sel == "SEEDANCE 1.5" else "en_s3")):
-                            shots_data.append(render_shot_panel(3, key_prefix=kp))
-                    if model_sel == "SEEDANCE 1.5": s15_shots_data = shots_data
+                        if st.toggle("Enable Shot 3", key="en_s3"):
+                            shots_data.append(render_shot_panel(3, key_prefix="s"))
                 else:
                     with st.expander("Shot type", expanded=False):
                         sd_shot_type = st.selectbox("Shot Type", LIST_SHOT_TYPES, key="sd_shot_type")
@@ -10277,9 +10214,6 @@ try { inp.blur(); } catch (e3) {}
             if model_sel == "SEEDANCE 2.0":
                 has_result = bool(st.session_state.get("s2_last_result"))
                 has_prompt = bool(st.session_state.get("s2_opt_prompt", "").strip())
-            elif model_sel == "SEEDANCE 1.5":
-                has_result = bool(st.session_state.get("s15_last_result"))
-                has_prompt = bool(st.session_state.get("s15_opt_prompt", "").strip())
             elif model_sel == "SEEDREAM 5.0":
                 has_result = bool(st.session_state.get("sd_last_result"))
                 has_prompt = bool(st.session_state.get("sd_opt_prompt", "").strip())
@@ -10294,9 +10228,6 @@ try { inp.blur(); } catch (e3) {}
                     _actual_duration = r.get("duration") or r.get("actual_duration") or r.get("video_duration")
                     if _actual_duration is not None:
                         st.caption(f"Actual duration: {_actual_duration}s")
-                elif model_sel == "SEEDANCE 1.5":
-                    r = st.session_state.s15_last_result
-                    if r.get("video"): st.video(r["video"])
                 elif model_sel == "SEEDREAM 5.0":
                     data = st.session_state.sd_last_result
                     r = data.get("result", {})
@@ -10311,8 +10242,6 @@ try { inp.blur(); } catch (e3) {}
                 st.markdown('<div class="generate-btn-wrap">', unsafe_allow_html=True)
                 if model_sel == "SEEDANCE 2.0":
                     generate_clicked = st.button("GENERATE", type="primary", use_container_width=True, key="s2_production_opt")
-                elif model_sel == "SEEDANCE 1.5":
-                    generate_clicked = st.button("GENERATE (S1.5)", type="primary", use_container_width=True, key="s15_production_opt")
                 else:
                     generate_clicked = st.button("GENERATE (Seedream)", type="primary", use_container_width=True, key="sd_production_opt")
                 st.markdown('</div>', unsafe_allow_html=True)
@@ -10321,8 +10250,6 @@ try { inp.blur(); } catch (e3) {}
                 # ── STATE 2: Editable prompt IS the canvas ──
                 if model_sel == "SEEDANCE 2.0":
                     _opt_key = "s2_opt_prompt"
-                elif model_sel == "SEEDANCE 1.5":
-                    _opt_key = "s15_opt_prompt"
                 else:
                     _opt_key = "sd_opt_prompt"
 
@@ -10343,8 +10270,6 @@ try { inp.blur(); } catch (e3) {}
                 st.markdown('<div class="generate-btn-wrap">', unsafe_allow_html=True)
                 if model_sel == "SEEDANCE 2.0":
                     generate_clicked = st.button("GENERATE", type="primary", use_container_width=True, key="s2_production_opt")
-                elif model_sel == "SEEDANCE 1.5":
-                    generate_clicked = st.button("GENERATE (S1.5)", type="primary", use_container_width=True, key="s15_production_opt")
                 else:
                     generate_clicked = st.button("GENERATE (Seedream)", type="primary", use_container_width=True, key="sd_production_opt")
                 st.markdown('</div>', unsafe_allow_html=True)
@@ -10364,8 +10289,6 @@ try { inp.blur(); } catch (e3) {}
                 st.markdown('<div class="generate-btn-wrap">', unsafe_allow_html=True)
                 if model_sel == "SEEDANCE 2.0":
                     generate_clicked = st.button("GENERATE", use_container_width=True, key="s2_production_opt")
-                elif model_sel == "SEEDANCE 1.5":
-                    generate_clicked = st.button("GENERATE (S1.5)", use_container_width=True, key="s15_production_opt")
                 else:
                     generate_clicked = st.button("GENERATE (Seedream)", use_container_width=True, key="sd_production_opt")
                 st.markdown('</div>', unsafe_allow_html=True)
@@ -10384,8 +10307,6 @@ try { inp.blur(); } catch (e3) {}
                 st.markdown('<div class="generate-btn-wrap">', unsafe_allow_html=True)
                 if model_sel == "SEEDANCE 2.0":
                     generate_clicked = st.button("GENERATE", use_container_width=True, key="s2_production_opt")
-                elif model_sel == "SEEDANCE 1.5":
-                    generate_clicked = st.button("GENERATE (S1.5)", use_container_width=True, key="s15_production_opt")
                 else:
                     generate_clicked = st.button("GENERATE (Seedream)", use_container_width=True, key="sd_production_opt")
                 st.markdown('</div>', unsafe_allow_html=True)
@@ -10395,7 +10316,6 @@ try { inp.blur(); } catch (e3) {}
                 st.markdown("""
                     <style>
                     div[data-testid="stButton"][data-key*="s2_production_opt"] > button,
-                    div[data-testid="stButton"][data-key*="s15_production_opt"] > button,
                     div[data-testid="stButton"][data-key*="sd_production_opt"] > button {
                         animation: pulse-generate 0.8s ease-in-out infinite !important;
                     }
@@ -10406,8 +10326,6 @@ try { inp.blur(); } catch (e3) {}
             if preview_clicked:
                 if model_sel == "SEEDANCE 2.0":
                     st.session_state["_do_preview_s2"] = True
-                elif model_sel == "SEEDANCE 1.5":
-                    st.session_state["_do_preview_s15"] = True
                 else:
                     st.session_state["_do_preview_sd"] = True
             if generate_clicked:
@@ -10418,93 +10336,68 @@ try { inp.blur(); } catch (e3) {}
                         st.session_state["_preview_feedback"] = "⚠️ Press PREVIEW PROMPT first."
                 elif model_sel == "SEEDANCE 2.0":
                     st.session_state["_do_generate_s2"] = True
-                elif model_sel == "SEEDANCE 1.5":
-                    st.session_state["_do_generate_s15"] = True
                 else:
                     st.session_state["_do_generate_sd"] = True
 
         with right_col:
             with st.expander("TECHNICAL", expanded=False):
                 if model_sel == "SEEDANCE 2.0":
-                    if st.session_state.get("video_resolution") not in ("720p", "480p"):
+                    if st.session_state.get("video_resolution") not in ("1080p", "720p", "480p"):
                         st.session_state["video_resolution"] = "720p"
                     if st.session_state.get("video_aspect_ratio") not in ("16:9", "9:16", "4:3", "3:4", "21:9", "1:1", "adaptive"):
                         st.session_state["video_aspect_ratio"] = "adaptive"
-                    resolution = st.selectbox("Resolution", ["720p", "480p"], key="video_resolution")
+                    resolution = st.selectbox("Resolution", ["1080p", "720p", "480p"], key="video_resolution")
                     aspect_ratio = st.selectbox("Aspect Ratio", ["16:9", "9:16", "4:3", "3:4", "21:9", "1:1", "adaptive"], key="video_aspect_ratio")
-                    _duration_slider = st.slider("Duration (s)", min_value=4, max_value=15, value=15, step=1, key="common_duration")
+                    _duration_slider = st.slider("Duration (s)", min_value=4, max_value=15, step=1, key="common_duration")
                     _smart_duration = st.checkbox("Smart Duration (-1)", key="s2_smart_duration")
                     duration = -1 if _smart_duration else _duration_slider
-                    gen_mode = "Standard (Online)"
-                    st.caption("Processing Mode: Standard (Online)")
+                    gen_mode = st.radio("Processing Mode", ["Standard (Online)", "Draft Mode (Preview)", "Offline (50% Cost)"], horizontal=True, key="s2_gen_mode")
                     st.checkbox("Watermark", key="s2_watermark")
-                elif model_sel == "SEEDANCE 1.5":
-                    s15_resolution = st.selectbox("Resolution", ["1080p", "720p", "480p"], key="s15_resolution")
-                    s15_aspect_ratio = st.selectbox("Aspect Ratio", ["16:9", "9:16", "1:1", "3:4"], key="s15_aspect_ratio")
-                    s15_duration = st.number_input("Duration (s)", min_value=4, max_value=12, value=12, step=1, key="s15_duration")
-                    s15_gen_mode = st.radio("Processing Mode", ["Standard (Online)", "Draft Mode (Preview)", "Offline (50% Cost)"], horizontal=True, key="s15_gen_mode")
                 else:
                     sd_resolution = st.selectbox("Resolution", ["3K", "2K"], key="sd_resolution")
                     sd_ar = st.selectbox("Aspect Ratio", ["Smart", "1:1", "3:4", "4:3", "16:9", "9:16", "2:3", "3:2", "21:9"], key="sd_ar_select")
 
             with st.expander("SEEDS & CREATIVITY", expanded=False):
                 if model_sel == "SEEDANCE 2.0":
-                    temperature = st.number_input("Creativity", min_value=0.0, max_value=1.5, value=0.5, step=0.1, key="common_temperature")
-                    num_variations = st.number_input("Variations", min_value=1, max_value=5, value=st.session_state.get('last_num_variations', 1), step=1, key="common_num_variations")
+                    temperature = st.number_input("Creativity", min_value=0.0, max_value=1.5, step=0.1, key="common_temperature")
+                    num_variations = st.number_input("Variations", min_value=1, max_value=5, step=1, key="common_num_variations")
                     cols = st.columns(min(num_variations, 5))
                     for i in range(num_variations):
                         with cols[i % 5]: st.text_input(f"Seed {i+1}", key=f"seed_input_{i}")
-                elif model_sel == "SEEDANCE 1.5":
-                    s15_temperature = st.number_input("Creativity", min_value=0.0, max_value=1.5, value=0.5, step=0.1, key="s15_temperature")
-                    s15_num_vars = st.number_input("Variations", min_value=1, max_value=5, value=1, step=1, key="s15_num_variations")
-                    s15_seed_cols = st.columns(min(s15_num_vars, 5))
-                    for i in range(s15_num_vars):
-                        if f's15_seed_{i}' not in st.session_state: st.session_state[f's15_seed_{i}'] = str(random.randint(1, 1000000))
-                        with s15_seed_cols[i % 5]: st.text_input(f"Seed {i+1}", key=f"s15_seed_{i}")
                 else:
                     sd_optimize = st.selectbox("Optimize prompt", ["None", "standard", "fast"], key="sd_optimize")
 
             with st.expander("AUDIO & LIP-SYNC", expanded=False):
-                if model_sel in ("SEEDANCE 1.5", "SEEDANCE 2.0"):
-                    _audio_key = "s15_enable_audio" if model_sel == "SEEDANCE 1.5" else "enable_audio"
-                    gen_audio = st.toggle("Enable Audio Generation & Sync", key=_audio_key)
+                if model_sel == "SEEDANCE 2.0":
+                    gen_audio = st.toggle("Enable Audio Generation & Sync", key="enable_audio")
                     if gen_audio:
-                        if model_sel == "SEEDANCE 2.0":
-                            v_lang = st.selectbox("Language", LIST_LANGUAGES, key="v_lang")
-                            v_emo = st.selectbox("Emotion", LIST_EMOTIONS, key="v_emo")
-                            v_timbre = st.selectbox("Timbre", ["Normal", "Deep", "Soft", "Raspy", "Clear"], key="v_timbre")
-                            v_pace = st.selectbox("Pace", ["Normal", "Slow", "Very Slow", "Fast"], key="v_pace")
-                            audio_details_dict['dialogue'] = st.text_area("Dialogue/Lip-Sync", placeholder="Text to speak...", key="s2_dialogue")
-                            audio_details_dict['sfx'] = st.text_input("Sound Effects Notes", key="s2_sfx")
-                            audio_details_dict['lang'] = v_lang
-                            audio_details_dict['emo'] = v_emo
-                            audio_details_dict['timbre'] = v_timbre
-                            audio_details_dict['pace'] = v_pace
-                        else:
-                            s15_gen_audio = True
-                            s15_v_lang = st.selectbox("Language", LIST_LANGUAGES, key="s15_v_lang")
-                            s15_v_emo = st.selectbox("Emotion", LIST_EMOTIONS, key="s15_v_emo")
-                            s15_v_timbre = st.selectbox("Timbre", ["Normal", "Deep", "Soft", "Raspy", "Clear"], key="s15_v_timbre")
-                            s15_v_pace = st.selectbox("Pace", ["Normal", "Slow", "Very Slow", "Fast"], key="s15_v_pace")
-                            s15_audio_details['dialogue'] = st.text_area("Dialogue/Lip-Sync", placeholder="Text to speak...", key="s15_dialogue")
-                            s15_audio_details['sfx'] = st.text_input("Sound Effects Notes", key="s15_sfx")
-                            s15_audio_details['lang'] = s15_v_lang
-                            s15_audio_details['emo'] = s15_v_emo
-                            s15_audio_details['timbre'] = s15_v_timbre
-                            s15_audio_details['pace'] = s15_v_pace
+                        v_lang = st.selectbox("Language", LIST_LANGUAGES, key="v_lang")
+                        v_emo = st.selectbox("Emotion", LIST_EMOTIONS, key="v_emo")
+                        v_timbre = st.selectbox("Timbre", ["Normal", "Deep", "Soft", "Raspy", "Clear"], key="v_timbre")
+                        v_pace = st.selectbox("Pace", ["Normal", "Slow", "Very Slow", "Fast"], key="v_pace")
+                        audio_details_dict['dialogue'] = st.text_area("Dialogue/Lip-Sync", placeholder="Text to speak...", key="s2_dialogue")
+                        audio_details_dict['sfx'] = st.text_input("Sound Effects Notes", key="s2_sfx")
+                        audio_details_dict['lang'] = v_lang
+                        audio_details_dict['emo'] = v_emo
+                        audio_details_dict['timbre'] = v_timbre
+                        audio_details_dict['pace'] = v_pace
 
             _save_console_param_snapshot()
 
             if st.button("GALLERY", key="top_gallery_btn", use_container_width=True):
+                st.session_state["_console_was_away"] = True
                 st.session_state.active_page = "gallery"
                 st.rerun()
             if st.button("STORYBOARD", key="top_sb_images_btn", use_container_width=True):
+                st.session_state["_console_was_away"] = True
                 st.session_state.active_page = "storyboard"
                 st.rerun()
             if st.button("REFERENCES", key="top_references_quick_btn", use_container_width=True):
+                st.session_state["_console_was_away"] = True
                 st.session_state.active_page = "references"
                 st.rerun()
             if st.button("EDITING", key="top_sb_video_btn", use_container_width=True):
+                st.session_state["_console_was_away"] = True
                 st.session_state.active_page = "editing"
                 st.rerun()
 
@@ -10530,23 +10423,6 @@ try { inp.blur(); } catch (e3) {}
                     gen_audio=gen_audio,
                     audio_details=audio_details_dict,
                     shots_data=shots_data,
-                )
-            elif model_sel == "SEEDANCE 1.5":
-                _seeds = [st.session_state.get(f"s15_seed_{i}", "") for i in range(st.session_state.get("s15_num_variations", 1))]
-                _json = _build_settings_json(
-                    model_sel,
-                    action_desc=s15_action_desc,
-                    image_usage=s15_image_usage,
-                    resolution=s15_resolution,
-                    aspect_ratio=s15_aspect_ratio,
-                    duration=s15_duration,
-                    gen_mode=s15_gen_mode,
-                    temperature=s15_temperature,
-                    seeds=_seeds,
-                    num_imgs=s15_num_imgs,
-                    gen_audio=gen_audio,
-                    audio_details=s15_audio_details,
-                    shots_data=s15_shots_data,
                 )
             else:
                 _json = _build_settings_json(
@@ -10584,8 +10460,8 @@ try { inp.blur(); } catch (e3) {}
             else:
                 st.error(fb)
 
-        _raw_val = st.session_state.get("s15_raw_prompt", "") if model_sel == "SEEDANCE 1.5" else (st.session_state.get("s2_raw_prompt", "") if model_sel == "SEEDANCE 2.0" else st.session_state.get("sd_raw_prompt", ""))
-        _opt_val = st.session_state.get("s15_opt_prompt", "") if model_sel == "SEEDANCE 1.5" else (st.session_state.get("s2_opt_prompt", "") if model_sel == "SEEDANCE 2.0" else st.session_state.get("sd_opt_prompt", ""))
+        _raw_val = st.session_state.get("s2_raw_prompt", "") if model_sel == "SEEDANCE 2.0" else st.session_state.get("sd_raw_prompt", "")
+        _opt_val = st.session_state.get("s2_opt_prompt", "") if model_sel == "SEEDANCE 2.0" else st.session_state.get("sd_opt_prompt", "")
         st.text_area(label="RAW PROMPT", value=_raw_val, height=100)
         st.text_area(label="OPTIMISED PROMPT", value=_opt_val, height=100)
         # ── Estimated cost display ──
@@ -10608,13 +10484,6 @@ try { inp.blur(); } catch (e3) {}
                     f'border-left:3px solid #FFEB3B;">'
                     f'Est. ~{_tokens_k:.1f}K tokens | ~${_est_cost:.3f} | Pack deduction: {_deduct_k:.1f}K tokens</p>',
                     unsafe_allow_html=True,
-                )
-            elif model_sel == "SEEDANCE 1.5":
-                _est_cost = estimate_cost(
-                    "seedance-1.5-pro", s15_resolution, s15_duration,
-                    s15_gen_audio,
-                    is_draft=(s15_gen_mode == "Draft Mode (Preview)"),
-                    is_offline=(s15_gen_mode == "Offline (50% Cost)"),
                 )
             else:
                 _est_cost = estimate_cost(
@@ -10743,98 +10612,6 @@ try { inp.blur(); } catch (e3) {}
                         st.session_state.s2_last_result = None
                         st.error(f"Production Failed: {result}")
                 st.session_state["_do_generate_s2"] = False
-                st.rerun()
-
-        # S1.5 preview
-        if model_sel == "SEEDANCE 1.5" and st.session_state.get("_do_preview_s15"):
-            if not s15_action_desc or not str(s15_action_desc).strip():
-                st.error("Write a scene description before pressing PREVIEW.")
-                st.session_state["_do_preview_s15"] = False
-            else:
-                with st.spinner("Building prompt for Seedance 1.5..."):
-                    try:
-                        s15_builder_args = {
-                            "scene_description": s15_action_desc, "workflow_type": "Standard Generation",
-                            "num_imgs": s15_num_imgs, "num_vids": 0, "num_auds": 0,
-                            "duration": s15_duration, "temperature": s15_temperature, "shots_data": s15_shots_data,
-                            "vision_context": st.session_state.get('s15_vision_context', None),
-                            "audio_sync": s15_audio_details if s15_gen_audio else None,
-                            "image_usage": s15_image_usage, "for_seedance_1_5": True,
-                        }
-                        s15_prompt_bundle = build_video_prompt(**s15_builder_args)
-                        raw = (s15_prompt_bundle or {}).get("raw_prompt", "")
-                        opt = (s15_prompt_bundle or {}).get("optimized_prompt", "")
-                        err = (s15_prompt_bundle or {}).get("error", "")
-
-                        st.session_state["s15_raw_prompt"] = raw
-                        st.session_state["s15_opt_prompt"] = opt
-                        st.session_state.s15_show_generate = True
-
-                        if err:
-                            st.session_state["_preview_feedback"] = f"⚠️ Builder error: {err}"
-                        elif not opt or opt.startswith("[LLM ERROR") or opt.startswith("[ERROR"):
-                            st.session_state["_preview_feedback"] = f"⚠️ LLM failed: {opt[:200]}"
-                        else:
-                            st.session_state["_preview_feedback"] = f"✅ Prompt generated ({len(opt.split())} words)"
-                    except Exception as e:
-                        st.session_state["_preview_feedback"] = f"❌ Exception: {str(e)[:200]}"
-                        st.session_state["s15_raw_prompt"] = ""
-                        st.session_state["s15_opt_prompt"] = f"[ERROR: {e}]"
-                st.session_state["_do_preview_s15"] = False
-                st.rerun()
-
-        # S1.5 generate
-        if model_sel == "SEEDANCE 1.5" and st.session_state.get("_do_generate_s15"):
-            if not GENERATION_ENABLED:
-                st.warning("Generation temporarily disabled (demo mode). Preview Prompt is active.")
-                st.session_state["_do_generate_s15"] = False
-            else:
-                chosen_prompt = st.session_state.get("s15_opt_prompt", "")
-                with st.spinner("Sending to BytePlus Ark (Seedance 1.5)..."):
-                    s15_result = generate_video(
-                        prompt_text=chosen_prompt, scene_description=(s15_action_desc or "")[:20],
-                        images=s15_images, videos=s15_videos, audios=s15_audio,
-                        image_usage=s15_image_usage,
-                        seed=st.session_state.get('s15_seed_0', "-1"),
-                        resolution=s15_resolution, aspect_ratio=s15_aspect_ratio, duration=s15_duration,
-                        generate_audio=s15_gen_audio, audio_details=s15_audio_details,
-                        is_draft=(s15_gen_mode == "Draft Mode (Preview)"), is_offline=(s15_gen_mode == "Offline (50% Cost)"),
-                        model_id=SEEDANCE_1_5_MODEL_ID, shots_data=s15_shots_data,
-                    )
-                    if isinstance(s15_result, dict) and s15_result.get("video"):
-                        st.session_state.s15_last_result = s15_result
-                        _s15_est_cost = estimate_cost("seedance-1.5-pro", s15_resolution, s15_duration, s15_gen_audio, is_draft=(s15_gen_mode == "Draft Mode (Preview)"), is_offline=(s15_gen_mode == "Offline (50% Cost)"))
-                        st.session_state.gallery_videos.append({"url": s15_result["video"], "caption": (s15_action_desc or "Seedance 1.5")[:50], "prompt": chosen_prompt, "resolution": s15_resolution, "duration": s15_duration, "aspect_ratio": s15_aspect_ratio, "video_path": s15_result.get("video_path"), "last_frame_path": s15_result.get("last_frame_path"), "model": "Seedance 1.5", "created_at": datetime.now().isoformat(), "project_id": st.session_state.get("active_project_id"), "estimated_cost": _s15_est_cost})
-                        _settings = st.session_state.get("_json_dict")
-                        if _settings is None:
-                            _seeds_sv = [st.session_state.get(f"s15_seed_{i}", "") for i in range(st.session_state.get("s15_num_variations", 1))]
-                            _settings = _build_settings_json(
-                                "SEEDANCE 1.5",
-                                action_desc=s15_action_desc,
-                                image_usage=s15_image_usage,
-                                resolution=s15_resolution,
-                                aspect_ratio=s15_aspect_ratio,
-                                duration=s15_duration,
-                                gen_mode=s15_gen_mode,
-                                temperature=s15_temperature,
-                                seeds=_seeds_sv,
-                                num_imgs=s15_num_imgs,
-                                gen_audio=s15_gen_audio,
-                                audio_details=s15_audio_details,
-                                shots_data=s15_shots_data,
-                            )
-                        if _settings and s15_result.get("video_path"):
-                            try:
-                                _json_path = s15_result["video_path"].rsplit(".", 1)[0] + "_settings.json"
-                                with open(_json_path, "w", encoding="utf-8") as _jf:
-                                    json.dump(_settings, _jf, indent=2, ensure_ascii=False)
-                            except Exception:
-                                pass
-                        save_gallery_to_disk(st.session_state.gallery_videos, st.session_state.gallery_images)
-                    else:
-                        st.session_state.s15_last_result = None
-                        st.error(f"Production Failed: {s15_result}")
-                st.session_state["_do_generate_s15"] = False
                 st.rerun()
 
         # Seedream preview
