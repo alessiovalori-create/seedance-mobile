@@ -2322,6 +2322,158 @@ _CONSOLE_SNAPSHOT_SKIP = frozenset({
 })
 
 
+def _project_settings_path(project_id):
+    """Return path to per-project Console settings JSON file."""
+    if not project_id:
+        return None
+    _dir = os.path.join(_DB_DIR, "project_settings")
+    os.makedirs(_dir, exist_ok=True)
+    # project_id is a slug/uuid; safe for filename
+    safe_id = str(project_id).replace("/", "_").replace("\\", "_")
+    return os.path.join(_dir, f"{safe_id}.json")
+
+
+def _default_console_params():
+    """Return the default Console parameter set used for new projects
+    and for migrating legacy projects without a settings file.
+    Keep this in sync with the if-not-in-session-state defaults at
+    the top of the main render loop."""
+    defaults = {
+        "video_resolution": "1080p",
+        "video_aspect_ratio": "adaptive",
+        "common_duration": 15,
+        "s2_smart_duration": False,
+        "s2_watermark": False,
+        "common_temperature": 0.5,
+        "common_num_variations": 1,
+        "enable_audio": False,
+        "en_s2": False,
+        "en_s3": False,
+        # Matches LIST_LANGUAGES[0] / LIST_EMOTIONS[0] in the main block
+        "v_lang": "English",
+        "v_emo": "Neutral",
+        "v_timbre": "Normal",
+        "v_pace": "Normal",
+        "s2_gen_mode": "Standard (Online)",
+        "s2_entry_point": "All-in-One Reference",
+        "s2_workflow": "Standard Generation",
+        "s2_workflow_fl": "Standard Generation",
+        "s2_workflow_ff": "Standard Generation",
+        "sd_resolution": "3K",
+        "sd_ar_select": "Smart",
+        "sd_style_select": "None (Raw Prompt)",
+        "sd_optimize": "None",
+        "action_desc_s2": "",
+        "sd_prompt_input": "",
+    }
+    return defaults
+
+
+def _migrate_legacy_projects_to_per_project_settings():
+    """One-shot migration: for any project in projects.json that does
+    not yet have a per-project settings JSON file, create one populated
+    with default values. Marker file prevents re-running."""
+    marker = os.path.join(_DB_DIR, ".migration_per_project_v1_done")
+    if os.path.isfile(marker):
+        return
+    try:
+        proj_data = load_projects()
+        projects = proj_data.get("projects", []) if isinstance(proj_data, dict) else []
+    except Exception:
+        projects = []
+    for p in projects:
+        if not isinstance(p, dict):
+            continue
+        pid = p.get("id")
+        if not pid:
+            continue
+        path = _project_settings_path(pid)
+        if not path or os.path.isfile(path):
+            continue  # already has a settings file — leave it alone
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(_default_console_params(), f, indent=2, ensure_ascii=False)
+        except OSError:
+            continue
+    try:
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write(datetime.now().isoformat())
+    except OSError:
+        pass
+
+
+def _save_project_console_settings(project_id=None):
+    """Persist current Console params to the active project's JSON file.
+    model_selector is excluded — it stays global."""
+    pid = project_id or st.session_state.get("active_project_id")
+    if not pid:
+        return
+    path = _project_settings_path(pid)
+    if not path:
+        return
+    snap = {}
+    for k in _console_snapshot_key_list():
+        if k == "model_selector":
+            continue  # Model is global, not per-project
+        if k in _CONSOLE_SNAPSHOT_SKIP:
+            continue
+        if _console_session_state_assign_forbidden(k):
+            continue
+        if k not in st.session_state:
+            continue
+        val = st.session_state[k]
+        # Only serialize JSON-safe primitives + lists/dicts of them
+        try:
+            json.dumps(val)
+            snap[k] = val
+        except (TypeError, ValueError):
+            continue
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(snap, f, indent=2, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+def _load_project_console_settings(project_id):
+    """Inject the given project's saved params into session_state.
+    Existing live keys are OVERWRITTEN — switching projects means
+    loading that project's exact state. model_selector is never
+    touched (stays global)."""
+    if not project_id:
+        return
+    path = _project_settings_path(project_id)
+    if not path or not os.path.isfile(path):
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            snap = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(snap, dict):
+        return
+    for sk, sv in snap.items():
+        if sk == "model_selector":
+            continue
+        if _console_session_state_assign_forbidden(sk):
+            continue
+        st.session_state[sk] = sv
+
+
+def _delete_project_console_settings(project_id):
+    """Delete the saved settings file for a project. Used by RESET."""
+    if not project_id:
+        return
+    path = _project_settings_path(project_id)
+    if not path:
+        return
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
 def _save_console_param_snapshot():
     """Persist console params when leaving Console — Streamlit drops undisplayed widget keys."""
     snap = {}
@@ -2337,17 +2489,22 @@ def _save_console_param_snapshot():
 
 
 def _restore_console_param_snapshot():
-    """Re-inject params only when returning to Console from another room."""
+    """Re-inject snapshotted params on every Console rerun. Re-mounts widget keys
+    that Streamlit dropped between renders (e.g. after a model_selector flip).
+    Existing live values in session_state take precedence — we only fill gaps."""
     if st.session_state.get("active_page") != "console":
         return
-    if not st.session_state.get("_console_was_away"):
-        return
-    st.session_state["_console_was_away"] = False
+    # Clear the was-away flag if it's set, but do not gate on it.
+    if st.session_state.get("_console_was_away"):
+        st.session_state["_console_was_away"] = False
     snap = st.session_state.get("_console_param_snapshot")
     if not isinstance(snap, dict) or not snap:
         return
     for sk, sv in snap.items():
         if _console_session_state_assign_forbidden(sk):
+            continue
+        # Fill gap only — never overwrite a live value the user just set.
+        if sk in st.session_state:
             continue
         st.session_state[sk] = sv
 
@@ -3672,7 +3829,7 @@ if check_password():
     if 'active_page' not in st.session_state: st.session_state.active_page = 'console'
     _restore_console_param_snapshot()
     if 'model_selector' not in st.session_state: st.session_state.model_selector = 'SEEDANCE 2.0'
-    if 'video_resolution' not in st.session_state: st.session_state.video_resolution = "720p"
+    if 'video_resolution' not in st.session_state: st.session_state.video_resolution = "1080p"
     if 'video_aspect_ratio' not in st.session_state: st.session_state.video_aspect_ratio = "adaptive"
     if 'common_duration' not in st.session_state: st.session_state.common_duration = 15
     if 's2_smart_duration' not in st.session_state: st.session_state.s2_smart_duration = False
@@ -3726,6 +3883,10 @@ if check_password():
     if 'json_preview' not in st.session_state:
         st.session_state.json_preview = None  # None or JSON string
 
+    # One-shot migration of legacy projects (no per-project settings file yet).
+    # Runs once; marker file at data/db/.migration_per_project_v1_done blocks repeats.
+    _migrate_legacy_projects_to_per_project_settings()
+
     # ── Projects ──
     if 'active_project_id' not in st.session_state:
         proj_data = load_projects()
@@ -3738,6 +3899,13 @@ if check_password():
             st.session_state.active_project_name = proj["name"] if proj else "All Projects"
         else:
             st.session_state.active_project_name = "All Projects"
+
+    # First-time load of active project's saved Console settings
+    if not st.session_state.get("_project_settings_loaded_for"):
+        _aid = st.session_state.get("active_project_id")
+        if _aid:
+            _load_project_console_settings(_aid)
+        st.session_state["_project_settings_loaded_for"] = _aid or "_none_"
 
     max_seeds = st.session_state.get('common_num_variations', 1)
     for i in range(max_seeds):
@@ -6924,7 +7092,10 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
                     st.session_state.active_project_id = pid
                     st.session_state.active_project_name = p["name"]
                     if pid != prev_pid:
+                        if prev_pid:
+                            _save_project_console_settings(prev_pid)
                         _clear_console_prompts_for_project_change()
+                        _load_project_console_settings(pid)
                     return
 
         _col_main, _col_side = st.columns([4, 1], gap="large")
@@ -9601,8 +9772,17 @@ try { inp.blur(); } catch (e3) {}
         preview_clicked = False
         json_clicked = False
 
+        # Save a fresh snapshot at the top of every Console render.
+        # Catches in-Console state changes (e.g. model flip) so the other
+        # model's params survive when the user flips back.
+        _save_console_param_snapshot()
+        # Also persist to the active project's JSON file (per-project memory).
+        _save_project_console_settings()
+
         if st.session_state.get("_console_reset_pending"):
             del st.session_state["_console_reset_pending"]
+            # Wipe active project's persistent settings file
+            _delete_project_console_settings(st.session_state.get("active_project_id"))
             _reset_keys = [
                 "action_desc_s2", "sd_prompt_input",
                 "s2_opt_prompt", "s2_raw_prompt",
@@ -9638,7 +9818,8 @@ try { inp.blur(); } catch (e3) {}
                 st.session_state.pop(k, None)
             for i in range(10):
                 st.session_state.pop(f"seed_input_{i}", None)
-            _save_console_param_snapshot()
+            # Clear in-memory snapshot too, so restore doesn't repopulate
+            st.session_state["_console_param_snapshot"] = {}
             st.rerun()
 
         left_col, center_col, right_col = st.columns([1, 2, 1], vertical_alignment="top")
@@ -10343,7 +10524,7 @@ try { inp.blur(); } catch (e3) {}
             with st.expander("TECHNICAL", expanded=False):
                 if model_sel == "SEEDANCE 2.0":
                     if st.session_state.get("video_resolution") not in ("1080p", "720p", "480p"):
-                        st.session_state["video_resolution"] = "720p"
+                        st.session_state["video_resolution"] = "1080p"
                     if st.session_state.get("video_aspect_ratio") not in ("16:9", "9:16", "4:3", "3:4", "21:9", "1:1", "adaptive"):
                         st.session_state["video_aspect_ratio"] = "adaptive"
                     resolution = st.selectbox("Resolution", ["1080p", "720p", "480p"], key="video_resolution")
