@@ -41,3 +41,5 @@ ui_app.py.pre_split
 *.pre*cut
 *.pre_split
 backups/
+arkitect_log.txt
+*.log
