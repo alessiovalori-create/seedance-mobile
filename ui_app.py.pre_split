@@ -20,46 +20,6 @@ from datetime import datetime
 import streamlit.components.v1 as components
 import base64 as _b64
 
-from arkitect.shared import (
-    CachedUploadedFile,
-    AssetFile,
-    _materialize_multi_file_upload,
-    _APP_DIR,
-    _PERSIST_DIR,
-    _DB_DIR,
-    _GENERATED_DIR,
-    _REFERENCES_DIR,
-    _DOWNLOADS_DIR,
-    _STATIC_DIR,
-)
-from arkitect.media_server import (
-    _setup_static_serving,
-    _ensure_media_server,
-    _to_media_url,
-    _to_static_url,
-    _STATIC_SERVING_OK,
-    _STATIC_SERVING_SUPPORTED,
-)
-from arkitect.storage import (
-    load_gallery_from_disk,
-    save_gallery_to_disk,
-    load_all_snapshots,
-    save_all_snapshots,
-    snapshot_entry_items,
-    snapshot_entry_project_id,
-    filter_snapshot_names,
-    upsert_snapshot_entry,
-    save_snapshot_with_active_project,
-    load_asset_catalog,
-    save_asset_catalog,
-    add_to_assets,
-    load_projects,
-    save_projects,
-    get_active_project_id,
-    get_active_project_name,
-    scan_assets,
-)
-
 from builder import build_prompt as build_video_prompt, analyze_cinematography, build_image_prompt
 from generator import generate_video, generate_seedream_image, SEEDANCE_2_0_MODEL_ID, SEEDREAM_5_0_LITE_MODEL_ID, SEEDREAM_4_5_MODEL_ID, PEXELS_API_KEY, UNSPLASH_API_KEY, estimate_cost, format_cost_str, _estimate_seedance2_usage
 GENERATION_ENABLED = True  # ← Set to False to disable generation
@@ -69,9 +29,32 @@ try:
 except ImportError:
     SORTABLES_AVAILABLE = False
 
+# ══════════════════════════════════════════════════════
+# STATIC FILE SERVING — auto-setup + diagnostic
+# ══════════════════════════════════════════════════════
 import subprocess
 import shutil
 import tempfile
+
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# ── Persistent data root: Railway Volume /data, or local data/ ──
+_PERSIST_DIR = os.getenv("PERSIST_DIR", "")
+if not _PERSIST_DIR:
+    _PERSIST_DIR = "/data" if os.path.isdir("/data") else os.path.join(_APP_DIR, "data")
+os.makedirs(_PERSIST_DIR, exist_ok=True)
+
+_DB_DIR = os.path.join(_PERSIST_DIR, "db")
+_GENERATED_DIR = os.path.join(_PERSIST_DIR, "generated")
+_REFERENCES_DIR = os.path.join(_PERSIST_DIR, "references")
+os.makedirs(_DB_DIR, exist_ok=True)
+os.makedirs(_GENERATED_DIR, exist_ok=True)
+os.makedirs(_REFERENCES_DIR, exist_ok=True)
+
+# Legacy alias — some code still references _DOWNLOADS_DIR
+_DOWNLOADS_DIR = _GENERATED_DIR
+_STATIC_DIR = os.path.join(_APP_DIR, "static")
+_STATIC_SERVING_OK = False
 
 # References (Pexels/Unsplash) iframe — Gallery .gal-card tokens + CSS columns masonry (natural aspect ratio)
 _REFS_STOCK_IFRAME_CSS = """<style>
@@ -184,6 +167,225 @@ def _refs_placeholder_style_attr(api_color):
     """Inline style setting --ref-ph when API provides avg_color / color."""
     safe = _refs_sanitize_hex_color(api_color)
     return f' style="--ref-ph:{safe};"' if safe else ""
+
+
+def _setup_static_serving():
+    """Ensure static serving is configured. Returns True if likely working."""
+    global _STATIC_SERVING_OK
+
+    # 1. Ensure downloads/ exists
+    os.makedirs(_DOWNLOADS_DIR, exist_ok=True)
+
+    # 2. Ensure .streamlit/config.toml has enableStaticServing
+    config_dir = os.path.join(_APP_DIR, ".streamlit")
+    config_path = os.path.join(config_dir, "config.toml")
+    os.makedirs(config_dir, exist_ok=True)
+
+    config_ok = False
+    if os.path.exists(config_path):
+        with open(config_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        if "enableStaticServing" in content:
+            config_ok = True
+
+    if not config_ok:
+        existing = ""
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                existing = f.read()
+        existing = re.sub(
+            r"\[server\]\s*\n\s*enableStaticServing\s*=\s*\w+\s*\n?",
+            "",
+            existing,
+        ).strip()
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.write("[server]\nenableStaticServing = true\n\n")
+            if existing:
+                f.write(existing + "\n")
+
+    # 3. Ensure static/ directory links to _PERSIST_DIR (serves generated/, references/, assets/)
+    if os.path.islink(_STATIC_DIR):
+        target = os.path.realpath(_STATIC_DIR)
+        if target != os.path.realpath(_PERSIST_DIR):
+            os.remove(_STATIC_DIR)
+            os.symlink(_PERSIST_DIR, _STATIC_DIR, target_is_directory=True)
+    elif os.path.isdir(_STATIC_DIR):
+        pass  # Don't delete user's static/ if it has content
+    elif not os.path.exists(_STATIC_DIR):
+        try:
+            os.symlink(_PERSIST_DIR, _STATIC_DIR, target_is_directory=True)
+        except OSError:
+            os.makedirs(_STATIC_DIR, exist_ok=True)
+
+    _STATIC_SERVING_OK = os.path.exists(_STATIC_DIR)
+    return _STATIC_SERVING_OK
+
+
+_setup_static_serving()
+
+# ── Local media server for serving ANY local video inside component iframes ──
+_MEDIA_SERVER_PORT = None
+
+
+def _ensure_media_server():
+    """Start a lightweight HTTP server (daemon thread) that can serve any local
+    video file by its base64-encoded absolute path.
+    URL format: http://127.0.0.1:<port>/media/<base64_of_abspath>
+    Only binds to 127.0.0.1 (localhost only, not exposed to network)."""
+    global _MEDIA_SERVER_PORT
+    if _MEDIA_SERVER_PORT is not None:
+        return _MEDIA_SERVER_PORT
+    try:
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        _ALLOWED_EXT = {".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"}
+        _MIME_MAP = {
+            ".mp4": "video/mp4",
+            ".mov": "video/quicktime",
+            ".webm": "video/webm",
+            ".mkv": "video/x-matroska",
+            ".avi": "video/x-msvideo",
+            ".m4v": "video/x-m4v",
+        }
+
+        class _MediaHandler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass  # suppress console spam
+
+            def do_GET(self):
+                if not self.path.startswith("/media/"):
+                    self.send_error(404)
+                    return
+                token = self.path[7:].split("?")[0]  # strip /media/ prefix and query
+                try:
+                    decoded = _b64.b64decode(token).decode("utf-8")
+                    file_path = os.path.realpath(os.path.abspath(decoded))
+                except Exception:
+                    self.send_error(400)
+                    return
+                ext = os.path.splitext(file_path)[1].lower()
+                if ext not in _ALLOWED_EXT or not os.path.isfile(file_path):
+                    self.send_error(404)
+                    return
+                mime = _MIME_MAP.get(ext, "application/octet-stream")
+                try:
+                    file_size = os.path.getsize(file_path)
+                    # Support Range requests for seeking
+                    range_header = self.headers.get("Range")
+                    if range_header:
+                        start, end = 0, file_size - 1
+                        r = range_header.replace("bytes=", "").strip()
+                        parts = r.split("-")
+                        start = int(parts[0]) if parts[0] else 0
+                        end = int(parts[1]) if len(parts) > 1 and parts[1] else file_size - 1
+                        end = min(end, file_size - 1)
+                        length = end - start + 1
+                        self.send_response(206)
+                        self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+                        self.send_header("Content-Length", str(length))
+                        self.send_header("Content-Type", mime)
+                        self.send_header("Accept-Ranges", "bytes")
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.end_headers()
+                        with open(file_path, "rb") as f:
+                            f.seek(start)
+                            self.wfile.write(f.read(length))
+                    else:
+                        self.send_response(200)
+                        self.send_header("Content-Type", mime)
+                        self.send_header("Content-Length", str(file_size))
+                        self.send_header("Accept-Ranges", "bytes")
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.end_headers()
+                        with open(file_path, "rb") as f:
+                            while True:
+                                chunk = f.read(65536)
+                                if not chunk:
+                                    break
+                                self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                except Exception:
+                    self.send_error(500)
+
+            def do_OPTIONS(self):
+                self.send_response(200)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "Range")
+                self.end_headers()
+
+        for port in range(8502, 8520):
+            try:
+                server = HTTPServer(("127.0.0.1", port), _MediaHandler)
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                _MEDIA_SERVER_PORT = port
+                return port
+            except OSError:
+                continue
+    except Exception:
+        pass
+    return None
+
+
+def _to_media_url(file_path):
+    """Convert ANY local video file path to an HTTP URL via the local media server."""
+    if not file_path:
+        return ""
+    if file_path.startswith("http://") or file_path.startswith("https://"):
+        return file_path
+    real = os.path.realpath(os.path.abspath(file_path))
+    if not os.path.isfile(real):
+        return ""
+    port = _ensure_media_server()
+    if port is None:
+        return _to_static_url(file_path)  # fallback
+    token = _b64.b64encode(real.encode("utf-8")).decode("ascii")
+    return f"http://127.0.0.1:{port}/media/{token}"
+
+
+try:
+    _st_version = st.__version__
+    _st_parts = _st_version.split(".")
+    _st_major, _st_minor = int(_st_parts[0]), int(_st_parts[1])
+    _STATIC_SERVING_SUPPORTED = (_st_major > 1) or (_st_major == 1 and _st_minor >= 31)
+except Exception:
+    _st_version = "unknown"
+    _STATIC_SERVING_SUPPORTED = False
+
+if not _STATIC_SERVING_SUPPORTED:
+    print(f"⚠️ Streamlit {_st_version} — static serving requires >= 1.31.0. Run: pip install --upgrade streamlit")
+
+
+def _to_static_url(file_path):
+    """Convert a local file path to a Streamlit static URL.
+    Serves downloads/, assets/ (via downloads/_assets symlink), and static/.
+    Returns original path as fallback if conversion fails."""
+    if not file_path:
+        return ""
+    if file_path.startswith("http://") or file_path.startswith("https://"):
+        return file_path
+    if not _STATIC_SERVING_OK:
+        return file_path
+
+    try:
+        real_file = os.path.realpath(os.path.abspath(file_path))
+    except OSError:
+        return file_path
+
+    real_persist = os.path.realpath(_PERSIST_DIR)
+    if real_file == real_persist or real_file.startswith(real_persist + os.sep):
+        rel = os.path.relpath(real_file, real_persist)
+        return f"/_stcore/static/{rel.replace(os.sep, '/')}"
+
+    real_static = os.path.realpath(_STATIC_DIR)
+    if real_file == real_static or real_file.startswith(real_static + os.sep):
+        rel = os.path.relpath(real_file, real_static)
+        return f"/_stcore/static/{rel.replace(os.sep, '/')}"
+
+    return file_path
 
 
 def _normalize_editing_video_item(item):
@@ -307,6 +509,96 @@ def _inject_pulse_css():
     }
     </style>
     """, unsafe_allow_html=True)
+
+GALLERY_FILE = os.path.join(_DB_DIR, "gallery.json")
+SNAPSHOTS_FILE = os.path.join(_DB_DIR, "snapshots.json")
+
+def load_gallery_from_disk():
+    if not os.path.exists(GALLERY_FILE):
+        return [], []
+    try:
+        with open(GALLERY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("videos", []), data.get("images", [])
+    except Exception:
+        return [], []
+
+def save_gallery_to_disk(videos, images):
+    try:
+        with open(GALLERY_FILE, "w", encoding="utf-8") as f:
+            json.dump({"videos": videos, "images": images}, f, ensure_ascii=False, indent=0)
+    except Exception:
+        pass
+
+def load_all_snapshots() -> dict:
+    if not os.path.exists(SNAPSHOTS_FILE):
+        return {"storyboard": {}, "editing": {}}
+    try:
+        with open(SNAPSHOTS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"storyboard": {}, "editing": {}}
+
+def save_all_snapshots(snapshots: dict):
+    try:
+        with open(SNAPSHOTS_FILE, "w", encoding="utf-8") as f:
+            json.dump(snapshots, f, ensure_ascii=False, indent=0)
+    except Exception:
+        pass
+
+
+def snapshot_entry_items(value):
+    """Return frame list from a storyboard/editing snapshot (legacy list or dict with items)."""
+    if isinstance(value, dict) and "items" in value:
+        return value["items"]
+    if isinstance(value, list):
+        return value
+    return []
+
+
+def snapshot_entry_project_id(value):
+    if isinstance(value, dict) and "items" in value:
+        return value.get("project_id")
+    return None
+
+
+def filter_snapshot_names(entries_dict, active_proj):
+    """Names visible in pick list: new format filtered by project; legacy lists only in All Projects."""
+    saved_names = []
+    for name, value in (entries_dict or {}).items():
+        if isinstance(value, dict) and "items" in value:
+            if active_proj is None or value.get("project_id") == active_proj:
+                saved_names.append(name)
+        else:
+            if active_proj is None:
+                saved_names.append(name)
+    return saved_names
+
+
+def upsert_snapshot_entry(snap_key, name, items_list):
+    """Auto-save from grid: keep existing project_id if entry is dict; else use active project."""
+    if not name:
+        return
+    snaps = load_all_snapshots()
+    bucket = snaps.setdefault(snap_key, {})
+    prev = bucket.get(name)
+    if isinstance(prev, dict) and "items" in prev:
+        pid = prev.get("project_id")
+    else:
+        pid = get_active_project_id()
+    bucket[name] = {"project_id": pid, "items": list(items_list)}
+    save_all_snapshots(snaps)
+
+
+def save_snapshot_with_active_project(snap_key, name, items_list):
+    """Explicit SAVE button: always tag with current active project."""
+    snaps = load_all_snapshots()
+    snaps.setdefault(snap_key, {})[name] = {
+        "project_id": get_active_project_id(),
+        "items": list(items_list),
+    }
+    save_all_snapshots(snaps)
+
 
 def _sync_storyboard_name_from_widgets():
     """Preferisce sb_active_name; altrimenti il primo campo sb_name_field* compilato."""
@@ -754,6 +1046,184 @@ def _render_editing_projects_sidebar():
         st.rerun()
 
 
+ASSETS_DIR = os.path.join(_PERSIST_DIR, "assets")
+ASSETS_CATALOG_FILE = os.path.join(_DB_DIR, "assets_catalog.json")
+
+
+class CachedUploadedFile:
+    """Mimics Streamlit UploadedFile from cached bytes, survives page navigation."""
+    def __init__(self, name, data, mime_type):
+        self.name = name
+        self.type = mime_type
+        self._data = data
+        self.size = len(data)
+
+    def getvalue(self):
+        return self._data
+
+    def read(self):
+        return self._data
+
+
+def _materialize_multi_file_upload(raw):
+    """Copy Streamlit multi-file uploader output to a list exactly once (avoids iterator / double-read loss)."""
+    if raw is None:
+        return []
+    return list(raw)
+
+
+class AssetFile:
+    """Wraps a file on disk to mimic Streamlit's UploadedFile interface."""
+    def __init__(self, path, name, mime_type):
+        self.name = name
+        self.type = mime_type
+        self._path = path
+        self.size = os.path.getsize(path) if os.path.exists(path) else 0
+
+    def getvalue(self):
+        with open(self._path, 'rb') as f:
+            return f.read()
+
+
+def load_asset_catalog():
+    if not os.path.exists(ASSETS_CATALOG_FILE):
+        return []
+    try:
+        with open(ASSETS_CATALOG_FILE, "r", encoding="utf-8") as f:
+            catalog = json.load(f)
+        # Remove entries whose files no longer exist on disk
+        valid = [a for a in catalog if os.path.exists(a.get("path", ""))]
+        if len(valid) != len(catalog):
+            save_asset_catalog(valid)
+        return valid
+    except Exception:
+        return []
+
+
+def save_asset_catalog(catalog):
+    os.makedirs(ASSETS_DIR, exist_ok=True)
+    try:
+        with open(ASSETS_CATALOG_FILE, "w", encoding="utf-8") as f:
+            json.dump(catalog, f, ensure_ascii=False, indent=0)
+    except Exception:
+        pass
+
+
+def add_to_assets(source_path=None, uploaded_file=None, original_name=None, provenance=None):
+    """
+    Add a file to the asset library.
+    source_path: path on disk (for copies from Gallery/Storyboard/Editing)
+    uploaded_file: Streamlit UploadedFile (for desktop uploads)
+    provenance: optional dict (e.g. ReferencesRoom: vendor, high_res_url, original_width/height)
+    Returns the new asset dict or None on failure.
+    """
+    catalog = load_asset_catalog()
+
+    if uploaded_file:
+        name = uploaded_file.name
+        data = uploaded_file.getvalue()
+        mime = getattr(uploaded_file, 'type', None) or 'application/octet-stream'
+    elif source_path and os.path.exists(source_path):
+        name = original_name or os.path.basename(source_path)
+        with open(source_path, 'rb') as f:
+            data = f.read()
+        ext = os.path.splitext(name)[1].lower()
+        mime_map = {
+            '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+            '.webp': 'image/webp', '.gif': 'image/gif',
+            '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.webm': 'video/webm',
+            '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg',
+            '.m4a': 'audio/mp4', '.flac': 'audio/flac', '.aac': 'audio/aac',
+        }
+        mime = mime_map.get(ext, 'application/octet-stream')
+    else:
+        return None
+
+    # Determine type and subdir
+    if mime.startswith('image'):
+        ftype, subdir = 'image', 'images'
+    elif mime.startswith('video'):
+        ftype, subdir = 'video', 'videos'
+    elif mime.startswith('audio'):
+        ftype, subdir = 'audio', 'audio'
+    else:
+        return None
+
+    # Check for duplicates by original name + size
+    for existing in catalog:
+        if existing.get("original_name") == name and existing.get("size") == len(data):
+            return existing  # already in library
+
+    # Save file to assets/{subdir}/
+    dest_dir = os.path.join(ASSETS_DIR, subdir)
+    os.makedirs(dest_dir, exist_ok=True)
+    safe_name = re.sub(r'[^\w.\-]', '_', name)
+    dest = os.path.join(dest_dir, safe_name)
+    if os.path.exists(dest):
+        base, ext_s = os.path.splitext(safe_name)
+        idx = 1
+        while os.path.exists(os.path.join(dest_dir, f"{base}_{idx}{ext_s}")):
+            idx += 1
+        safe_name = f"{base}_{idx}{ext_s}"
+        dest = os.path.join(dest_dir, safe_name)
+
+    with open(dest, 'wb') as f:
+        f.write(data)
+
+    asset_id = f"{ftype[0]}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{random.randint(100, 999)}"
+    entry = {
+        "id": asset_id,
+        "name": safe_name,
+        "original_name": name,
+        "type": ftype,
+        "path": dest,
+        "mime": mime,
+        "size": len(data),
+        "size_str": f"{len(data) / (1024*1024):.1f} MB" if len(data) >= 1024*1024 else f"{len(data) / 1024:.0f} KB",
+        "notes": "",
+        "uploaded_at": datetime.now().isoformat(),
+        "project_id": st.session_state.get("active_project_id"),
+    }
+    if provenance and isinstance(provenance, dict):
+        entry["provenance"] = provenance
+    catalog.append(entry)
+    save_asset_catalog(catalog)
+    return entry
+
+PROJECTS_FILE = os.path.join(_DB_DIR, "projects.json")
+
+
+def load_projects():
+    if not os.path.exists(PROJECTS_FILE):
+        return {"projects": [], "active_project_id": None}
+    try:
+        with open(PROJECTS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if "projects" not in data:
+            data["projects"] = []
+        if "active_project_id" not in data:
+            data["active_project_id"] = None
+        return data
+    except Exception:
+        return {"projects": [], "active_project_id": None}
+
+
+def save_projects(data):
+    try:
+        with open(PROJECTS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def get_active_project_id():
+    return st.session_state.get("active_project_id")
+
+
+def get_active_project_name():
+    return st.session_state.get("active_project_name", "All Projects")
+
+
 def _render_project_indicator():
     """Shows a small non-interactive label with the active project name."""
     name = get_active_project_name()
@@ -784,6 +1254,87 @@ def _render_project_name_inline_right():
         f'Project : {_pname}</p>',
         unsafe_allow_html=True,
     )
+
+
+DOWNLOADS_DIR = _GENERATED_DIR
+UPLOADS_DIR = os.path.join(_GENERATED_DIR, "uploads")
+
+IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.webp', '.gif'}
+VIDEO_EXTS = {'.mp4', '.mov', '.webm'}
+AUDIO_EXTS = {'.mp3', '.wav', '.ogg', '.m4a', '.flac', '.aac'}
+
+def scan_assets(filter_type="All"):
+    """
+    Scan downloads/ directory for all media files.
+    filter_type: "All", "Images", "Videos", "Audio"
+    Returns list of dicts sorted by modification time (newest first).
+    """
+    assets = []
+    if not os.path.exists(DOWNLOADS_DIR):
+        return assets
+
+    for root, dirs, files in os.walk(DOWNLOADS_DIR):
+        for fname in files:
+            fpath = os.path.join(root, fname)
+            ext = os.path.splitext(fname)[1].lower()
+
+            # Skip metadata text files
+            if ext == '.txt':
+                continue
+
+            # Determine type
+            if ext in IMAGE_EXTS:
+                ftype = "image"
+            elif ext in VIDEO_EXTS:
+                ftype = "video"
+            elif ext in AUDIO_EXTS:
+                ftype = "audio"
+            else:
+                continue
+
+            # Apply filter
+            if filter_type == "Images" and ftype != "image":
+                continue
+            if filter_type == "Videos" and ftype != "video":
+                continue
+            if filter_type == "Audio" and ftype != "audio":
+                continue
+
+            # Get folder name (date or "uploads")
+            rel = os.path.relpath(root, DOWNLOADS_DIR)
+            folder = rel if rel != "." else ""
+
+            try:
+                stat = os.stat(fpath)
+                mtime = stat.st_mtime
+                size_bytes = stat.st_size
+            except Exception:
+                mtime = 0
+                size_bytes = 0
+
+            # Human-readable size
+            if size_bytes < 1024:
+                size_str = f"{size_bytes} B"
+            elif size_bytes < 1024 * 1024:
+                size_str = f"{size_bytes / 1024:.1f} KB"
+            else:
+                size_str = f"{size_bytes / (1024 * 1024):.1f} MB"
+
+            assets.append({
+                "path": fpath,
+                "name": fname,
+                "type": ftype,
+                "ext": ext,
+                "size": size_bytes,
+                "size_str": size_str,
+                "date": datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M"),
+                "date_short": datetime.fromtimestamp(mtime).strftime("%m/%d"),
+                "folder": folder,
+                "mtime": mtime,
+            })
+
+    assets.sort(key=lambda x: x["mtime"], reverse=True)
+    return assets
 
 
 def toggle_refs_selection(image_id, source="pexels"):
