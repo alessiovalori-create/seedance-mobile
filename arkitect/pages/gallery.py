@@ -1,5 +1,5 @@
-# PHASE 2B NOTE: _render_project_name_inline_right, _get_thumbnail_src_resized,
-# _render_storyboard_save_load are shared — late-imported from ui_app until step B6.
+# PHASE 2B NOTE: _render_project_name_inline_right is shared — late-imported from ui_app until step B6.
+# Storyboard/editing helpers come from arkitect.storyboard_io.
 
 import os
 import json
@@ -9,6 +9,11 @@ import base64 as _b64
 import streamlit as st
 import streamlit.components.v1 as components
 
+from arkitect.storyboard_io import (
+    _autosave_storyboard_snapshot,
+    _normalize_editing_video_item,
+    _get_thumbnail_src_resized,
+)
 from arkitect.storage import (
     get_active_project_id,
     add_to_assets,
@@ -19,7 +24,6 @@ from arkitect.storage import (
 
 def _render_gallery_sidebar():
     """Sidebar pagina Gallery: layout [4,1] come Projects / Storyboard."""
-    from ui_app import _autosave_storyboard_snapshot, _normalize_editing_video_item
     _media_tab = st.session_state.get("gal_media_tab", "Images")
     _active_proj = get_active_project_id()
 
@@ -207,11 +211,7 @@ def _render_gallery_sidebar():
 
 def render_gallery_page():
     """Render the Gallery page (generated videos and images)."""
-    from ui_app import (
-        _render_project_name_inline_right,
-        _get_thumbnail_src_resized,
-        _render_storyboard_save_load,
-    )
+    from ui_app import _render_project_name_inline_right
 
     GALLERY_PER_PAGE = 20
     GALLERY_COLS = 5
