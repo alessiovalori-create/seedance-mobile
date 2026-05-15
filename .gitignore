@@ -40,3 +40,4 @@ generation_log.csv
 ui_app.py.pre_split
 *.pre*cut
 *.pre_split
+backups/

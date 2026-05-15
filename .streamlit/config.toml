@@ -1,5 +1,3 @@
 [server]
-enableStaticServing = true
-
-[theme]
-base = "dark"
+fileWatcherType = "poll"
+folderWatchBlacklist = ["backups", "data/generated", ".git"]
