@@ -152,6 +152,7 @@ _CONSOLE_SNAPSHOT_SKIP = frozenset({
     "s2_last_result", "sd_last_result",
     "_console_reset_pending",
     "_console_param_snapshot",
+    "_project_just_switched",
 })
 
 
@@ -326,6 +327,12 @@ def _restore_console_param_snapshot():
     that Streamlit dropped between renders (e.g. after a model_selector flip).
     Existing live values in session_state take precedence — we only fill gaps."""
     if st.session_state.get("active_page") != "console":
+        return
+    # If a project switch just happened, the new project's params
+    # were loaded by _load_project_console_settings(). Skip the
+    # in-memory snapshot restore so we don't overwrite them.
+    if st.session_state.get("_project_just_switched"):
+        st.session_state["_project_just_switched"] = False
         return
     # Clear the was-away flag if it's set, but do not gate on it.
     if st.session_state.get("_console_was_away"):

@@ -184,6 +184,7 @@ def render_projects_page():
                         _save_project_console_settings(prev_pid)
                     _clear_console_prompts_for_project_change()
                     _load_project_console_settings(pid)
+                    st.session_state["_project_just_switched"] = True
                 return
 
     _col_main, _col_side = st.columns([4, 1], gap="large")
