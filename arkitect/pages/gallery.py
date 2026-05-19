@@ -40,7 +40,7 @@ def _render_gallery_sidebar():
             unsafe_allow_html=True,
         )
 
-        if st.button("STORYBOARD", key="gal_sb_add_imgs_to_sb", use_container_width=True):
+        if st.button("STORYBOARD", key="gal_sb_add_imgs_to_sb", width="stretch"):
             if n_sel == 0:
                 st.toast("Seleziona almeno un'immagine nella griglia.")
             else:
@@ -70,7 +70,7 @@ def _render_gallery_sidebar():
 
         st.markdown('<div style="height:8px;"></div>', unsafe_allow_html=True)
 
-        if st.button("ASSETS", key="gal_sb_save_imgs_to_assets", use_container_width=True):
+        if st.button("ASSETS", key="gal_sb_save_imgs_to_assets", width="stretch"):
             if n_sel == 0:
                 st.toast("Seleziona almeno un'immagine nella griglia.")
             else:
@@ -101,7 +101,7 @@ def _render_gallery_sidebar():
             unsafe_allow_html=True,
         )
 
-        if st.button("EDITING", key="gal_sb_add_vids_to_ed", use_container_width=True):
+        if st.button("EDITING", key="gal_sb_add_vids_to_ed", width="stretch"):
             if vn_sel == 0:
                 st.toast("Select at least one video.")
             else:
@@ -136,7 +136,7 @@ def _render_gallery_sidebar():
 
         st.markdown('<div style="height:8px;"></div>', unsafe_allow_html=True)
 
-        if st.button("ASSETS", key="gal_sb_save_vids_to_assets", use_container_width=True):
+        if st.button("ASSETS", key="gal_sb_save_vids_to_assets", width="stretch"):
             if vn_sel == 0:
                 st.toast("Select at least one video.")
             else:
@@ -158,7 +158,7 @@ def _render_gallery_sidebar():
         '<hr style="border:none;border-top:1px solid #2a2a28;margin:16px 0;">',
         unsafe_allow_html=True,
     )
-    if st.button("CLEAR", key="gal_sidebar_clear_sel", use_container_width=True):
+    if st.button("CLEAR", key="gal_sidebar_clear_sel", width="stretch"):
         st.session_state.gallery_selected_imgs = set()
         st.session_state.gallery_selected_vids = set()
         st.toast("Selection cleared.")
@@ -182,10 +182,10 @@ def _render_gallery_sidebar():
             f'Page {_cur_nav + 1} / {_pages_nav}</p>',
             unsafe_allow_html=True,
         )
-        if st.button("← PREV", key="gal_sb_img_prev", use_container_width=True, disabled=(_cur_nav == 0)):
+        if st.button("← PREV", key="gal_sb_img_prev", width="stretch", disabled=(_cur_nav == 0)):
             st.session_state.gallery_img_page -= 1
             st.rerun()
-        if st.button("NEXT →", key="gal_sb_img_next", use_container_width=True, disabled=(_cur_nav >= _pages_nav - 1)):
+        if st.button("NEXT →", key="gal_sb_img_next", width="stretch", disabled=(_cur_nav >= _pages_nav - 1)):
             st.session_state.gallery_img_page += 1
             st.rerun()
     else:
@@ -201,10 +201,10 @@ def _render_gallery_sidebar():
             f'Page {_cur_nav + 1} / {_pages_nav}</p>',
             unsafe_allow_html=True,
         )
-        if st.button("← PREV", key="gal_sb_vid_prev", use_container_width=True, disabled=(_cur_nav == 0)):
+        if st.button("← PREV", key="gal_sb_vid_prev", width="stretch", disabled=(_cur_nav == 0)):
             st.session_state.gallery_vid_page -= 1
             st.rerun()
-        if st.button("NEXT →", key="gal_sb_vid_next", use_container_width=True, disabled=(_cur_nav >= _pages_nav - 1)):
+        if st.button("NEXT →", key="gal_sb_vid_next", width="stretch", disabled=(_cur_nav >= _pages_nav - 1)):
             st.session_state.gallery_vid_page += 1
             st.rerun()
 

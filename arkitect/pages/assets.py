@@ -138,7 +138,7 @@ def render_assets_page():
         if total_pages > 1:
             pn1, pn2, pn3 = st.columns([1, 2, 1])
             with pn1:
-                if st.button("← PREV", key="assets_prev", use_container_width=True,
+                if st.button("← PREV", key="assets_prev", width="stretch",
                              disabled=(current_page == 0)):
                     st.session_state.assets_page -= 1
                     st.rerun()
@@ -149,7 +149,7 @@ def render_assets_page():
                     unsafe_allow_html=True,
                 )
             with pn3:
-                if st.button("NEXT →", key="assets_next", use_container_width=True,
+                if st.button("NEXT →", key="assets_next", width="stretch",
                              disabled=(current_page >= total_pages - 1)):
                     st.session_state.assets_page += 1
                     st.rerun()
@@ -248,7 +248,7 @@ def render_assets_page():
                     # Media preview
                     if ftype == "image" and os.path.exists(fpath):
                         try:
-                            st.image(fpath, use_container_width=True)
+                            st.image(fpath, width="stretch")
                         except Exception:
                             st.warning(f"Cannot display: {fname}")
                     elif ftype == "video" and os.path.exists(fpath):
@@ -283,7 +283,7 @@ def render_assets_page():
                                 "🗑",
                                 key=_del_key,
                                 help="Remove from Assets",
-                                use_container_width=True,
+                                width="stretch",
                             ):
                                 _do_asset_delete(asset, fpath, fname)
                     else:
@@ -301,6 +301,6 @@ def render_assets_page():
                                 "🗑",
                                 key=f"asset_del_audio_{asset['id']}",
                                 help="Remove from Assets",
-                                use_container_width=True,
+                                width="stretch",
                             ):
                                 _do_asset_delete(asset, fpath, fname)

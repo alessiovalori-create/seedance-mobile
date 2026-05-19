@@ -1060,7 +1060,7 @@ def render_references_page():
                     if st.button(
                         "STORYBOARD",
                         key="refs_bar_storyboard_btn_pexels",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         _a, _dup, _fail = _refs_send_selected_to_storyboard()
                         _parts = []
@@ -1080,7 +1080,7 @@ def render_references_page():
                     if st.button(
                         "ASSET",
                         key="refs_bar_asset_btn_pexels",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         _sv, _fl = _refs_send_selected_to_assets()
                         if _sv:
@@ -1094,7 +1094,7 @@ def render_references_page():
                     if st.button(
                         "CLEAR",
                         key="refs_pexels_clear_sel",
-                        use_container_width=True,
+                        width="stretch",
                         disabled=(_n_pex_tab == 0),
                     ):
                         st.session_state.refs_selected_pexels = set()
@@ -1286,7 +1286,7 @@ try { inp.blur(); } catch (e3) {}
                     if st.button(
                         "STORYBOARD",
                         key="refs_bar_storyboard_btn_unsplash",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         _a, _dup, _fail = _refs_send_selected_to_storyboard()
                         _parts = []
@@ -1306,7 +1306,7 @@ try { inp.blur(); } catch (e3) {}
                     if st.button(
                         "ASSET",
                         key="refs_bar_asset_btn_unsplash",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         _sv, _fl = _refs_send_selected_to_assets()
                         if _sv:
@@ -1320,7 +1320,7 @@ try { inp.blur(); } catch (e3) {}
                     if st.button(
                         "CLEAR",
                         key="refs_unsplash_clear_sel",
-                        use_container_width=True,
+                        width="stretch",
                         disabled=(_n_uns_tab == 0),
                     ):
                         st.session_state.refs_selected_unsplash = set()
@@ -1530,7 +1530,7 @@ try { inp.blur(); } catch (e3) {}
                                             if st.button(
                                                 "SAVE TO ASSETS",
                                                 key=f"unsplash_save_{_pid}",
-                                                use_container_width=True,
+                                                width="stretch",
                                             ):
                                                 if download_endpoint:
                                                     try:
@@ -1610,7 +1610,7 @@ try { inp.blur(); } catch (e3) {}
                     if st.button(
                         "STORYBOARD",
                         key="refs_bar_storyboard_btn_art_chicago",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         _a, _dup, _fail = _refs_send_selected_to_storyboard()
                         _parts = []
@@ -1630,7 +1630,7 @@ try { inp.blur(); } catch (e3) {}
                     if st.button(
                         "ASSET",
                         key="refs_bar_asset_btn_art_chicago",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         _sv, _fl = _refs_send_selected_to_assets()
                         if _sv:
@@ -1644,7 +1644,7 @@ try { inp.blur(); } catch (e3) {}
                     if st.button(
                         "CLEAR",
                         key="refs_art_clear_sel",
-                        use_container_width=True,
+                        width="stretch",
                         disabled=(_n_art_tab == 0),
                     ):
                         st.session_state.refs_selected_art_chicago = set()
@@ -1821,7 +1821,7 @@ try { inp.blur(); } catch (e3) {}
                     if st.button(
                         "STORYBOARD",
                         key="refs_bar_storyboard_btn_met",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         _a, _dup, _fail = _refs_send_selected_to_storyboard()
                         _parts = []
@@ -1837,7 +1837,7 @@ try { inp.blur(); } catch (e3) {}
                     if st.button(
                         "ASSET",
                         key="refs_bar_asset_btn_met",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         _sv, _fl = _refs_send_selected_to_assets()
                         if _sv:
@@ -1851,7 +1851,7 @@ try { inp.blur(); } catch (e3) {}
                     if st.button(
                         "CLEAR",
                         key="refs_met_clear_sel",
-                        use_container_width=True,
+                        width="stretch",
                         disabled=(_refs_met_n_sel == 0),
                     ):
                         st.session_state.refs_selected_met = set()
@@ -2135,7 +2135,7 @@ try { inp.blur(); } catch (e3) {}
                                     if st.button(
                                         "STORYBOARD",
                                         key="refs_bar_storyboard_btn_pexels_video",
-                                        use_container_width=True,
+                                        width="stretch",
                                     ):
                                         st.toast(
                                             "Pexels videos selection stored in session_state."
@@ -2145,7 +2145,7 @@ try { inp.blur(); } catch (e3) {}
                                     if st.button(
                                         "ASSET",
                                         key="refs_bar_asset_btn_pexels_video",
-                                        use_container_width=True,
+                                        width="stretch",
                                     ):
                                         _vby = st.session_state.get("_refs_pexels_video_by_id") or {}
                                         _v_saved = 0
@@ -2186,7 +2186,7 @@ try { inp.blur(); } catch (e3) {}
                                     if st.button(
                                         "CLEAR",
                                         key="refs_pexels_video_clear_sel",
-                                        use_container_width=True,
+                                        width="stretch",
                                         disabled=(_n_vid_sel == 0),
                                     ):
                                         st.session_state.refs_selected_pexels_videos = set()
@@ -2346,7 +2346,7 @@ try { inp.blur(); } catch (e3) {}
                                     if st.button(
                                         "STORYBOARD",
                                         key="refs_bar_storyboard_btn_pixabay_video",
-                                        use_container_width=True,
+                                        width="stretch",
                                     ):
                                         st.toast("Pixabay videos stored in session_state.")
                                         st.rerun()
@@ -2354,7 +2354,7 @@ try { inp.blur(); } catch (e3) {}
                                     if st.button(
                                         "ASSET",
                                         key="refs_bar_asset_btn_pixabay_video",
-                                        use_container_width=True,
+                                        width="stretch",
                                     ):
                                         _vby = st.session_state.get("_refs_pixabay_video_by_id") or {}
                                         _v_saved = 0
@@ -2398,7 +2398,7 @@ try { inp.blur(); } catch (e3) {}
                                     if st.button(
                                         "CLEAR",
                                         key="refs_pixabay_video_clear_sel",
-                                        use_container_width=True,
+                                        width="stretch",
                                         disabled=(_n_pxv_sel == 0),
                                     ):
                                         st.session_state.refs_selected_pixabay_videos = set()
@@ -2551,7 +2551,7 @@ try { inp.blur(); } catch (e3) {}
                                     if st.button(
                                         "STORYBOARD",
                                         key="refs_bar_storyboard_btn_coverr_video",
-                                        use_container_width=True,
+                                        width="stretch",
                                     ):
                                         st.toast("Coverr videos stored in session_state.")
                                         st.rerun()
@@ -2559,7 +2559,7 @@ try { inp.blur(); } catch (e3) {}
                                     if st.button(
                                         "ASSET",
                                         key="refs_bar_asset_btn_coverr_video",
-                                        use_container_width=True,
+                                        width="stretch",
                                     ):
                                         _vby = st.session_state.get("_refs_coverr_video_by_id") or {}
                                         _v_saved = 0
@@ -2600,7 +2600,7 @@ try { inp.blur(); } catch (e3) {}
                                     if st.button(
                                         "CLEAR",
                                         key="refs_coverr_video_clear_sel",
-                                        use_container_width=True,
+                                        width="stretch",
                                         disabled=(_n_cvr_sel == 0),
                                     ):
                                         st.session_state.refs_selected_coverr_videos = set()
@@ -2665,7 +2665,7 @@ try { inp.blur(); } catch (e3) {}
             st.link_button(
                 "Open search on artsandculture.google.com →",
                 _ga_open,
-                use_container_width=True,
+                width="stretch",
                 help="Opens Google Arts & Culture in a new tab",
             )
 
@@ -2685,7 +2685,7 @@ try { inp.blur(); } catch (e3) {}
                     if st.button(
                         "STORYBOARD",
                         key="refs_bar_storyboard_btn_google_arts",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         _a, _dup, _fail = _refs_send_selected_to_storyboard()
                         _parts = []
@@ -2701,7 +2701,7 @@ try { inp.blur(); } catch (e3) {}
                     if st.button(
                         "ASSET",
                         key="refs_bar_asset_btn_google_arts",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         _sv, _fl = _refs_send_selected_to_assets()
                         if _sv:
@@ -2715,7 +2715,7 @@ try { inp.blur(); } catch (e3) {}
                     if st.button(
                         "CLEAR",
                         key="refs_google_arts_clear_sel",
-                        use_container_width=True,
+                        width="stretch",
                         disabled=(_refs_ga_n_sel == 0),
                     ):
                         st.session_state.refs_selected_google_arts = set()
@@ -2879,7 +2879,7 @@ try { inp.blur(); } catch (e3) {}
                 )
                 col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 1], gap="small")
                 with col_btn1:
-                    if st.button("STORYBOARD", key="refs_bar_storyboard_btn_wiki", use_container_width=True):
+                    if st.button("STORYBOARD", key="refs_bar_storyboard_btn_wiki", width="stretch"):
                         _a, _dup, _fail = _refs_send_selected_to_storyboard()
                         _parts = []
                         if _a:
@@ -2891,7 +2891,7 @@ try { inp.blur(); } catch (e3) {}
                         st.toast(". ".join(_parts) if _parts else "Nothing added.")
                         st.rerun()
                 with col_btn2:
-                    if st.button("ASSET", key="refs_bar_asset_btn_wiki", use_container_width=True):
+                    if st.button("ASSET", key="refs_bar_asset_btn_wiki", width="stretch"):
                         _sv, _fl = _refs_send_selected_to_assets()
                         if _sv:
                             st.toast(f"Saved {_sv} image(s) to Assets" + (f" ({_fl} failed)" if _fl else ""))
@@ -2901,7 +2901,7 @@ try { inp.blur(); } catch (e3) {}
                             st.toast("Nothing saved.")
                         st.rerun()
                 with col_btn3:
-                    if st.button("CLEAR", key="refs_wiki_clear_sel", use_container_width=True, disabled=(_refs_wiki_n_sel == 0)):
+                    if st.button("CLEAR", key="refs_wiki_clear_sel", width="stretch", disabled=(_refs_wiki_n_sel == 0)):
                         st.session_state.refs_selected_wiki = set()
                         if "selected_images" in st.session_state:
                             for _k in list(st.session_state.selected_images.keys()):

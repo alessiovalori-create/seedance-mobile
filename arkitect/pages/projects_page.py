@@ -212,7 +212,7 @@ def render_projects_page():
             label_visibility="collapsed",
             placeholder="Project name...",
         )
-        if st.button("NEW PROJECT", key="create_project_btn", use_container_width=True):
+        if st.button("NEW PROJECT", key="create_project_btn", width="stretch"):
             name = (new_proj_name or "").strip()
             proj_data = load_projects()
             plist = proj_data.get("projects", [])
@@ -244,7 +244,7 @@ def render_projects_page():
         if st.button(
             "DELETE",
             key="proj_delete_active_btn",
-            use_container_width=True,
+            width="stretch",
         ):
             pd = load_projects()
             aid = st.session_state.get("active_project_id")
@@ -267,7 +267,7 @@ def render_projects_page():
         )
         _is_all = st.session_state.get("active_project_id") is None
         _all_lbl = "ALL PROJECTS" + (" ✓" if _is_all else "")
-        if st.button(_all_lbl, key="select_all_projects", use_container_width=True):
+        if st.button(_all_lbl, key="select_all_projects", width="stretch"):
             pd = load_projects()
             pd["active_project_id"] = None
             save_projects(pd)

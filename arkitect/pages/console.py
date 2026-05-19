@@ -807,24 +807,24 @@ def render_console_page():
                             _sd_ref_tag_map[_n] = f"@Image {_i + 1}"
                 st.session_state["_console_ref_tag_map"] = _sd_ref_tag_map
 
-        if st.button("PROJECTS", key="top_projects_btn", use_container_width=True):
+        if st.button("PROJECTS", key="top_projects_btn", width="stretch"):
             _save_console_param_snapshot()
             st.session_state["_console_was_away"] = True
             st.session_state.active_page = "projects"
             st.rerun()
 
-        if st.button("ASSETS", key="top_assets_btn", use_container_width=True):
+        if st.button("ASSETS", key="top_assets_btn", width="stretch"):
             _save_console_param_snapshot()
             st.session_state["_console_was_away"] = True
             st.session_state.active_page = "assets"
             st.rerun()
 
-        json_clicked = st.button("JSON", use_container_width=True, key="json_settings_btn")
+        json_clicked = st.button("JSON", width="stretch", key="json_settings_btn")
 
         if model_sel == "SEEDANCE 2.0":
-            preview_clicked = st.button("PREVIEW PROMPT", use_container_width=True, key="preview_prompt_btn")
+            preview_clicked = st.button("PREVIEW PROMPT", width="stretch", key="preview_prompt_btn")
         else:
-            preview_clicked = st.button("PREVIEW PROMPT (Seedream)", use_container_width=True, key="sd_preview_btn")
+            preview_clicked = st.button("PREVIEW PROMPT (Seedream)", width="stretch", key="sd_preview_btn")
 
         if not _STATIC_SERVING_SUPPORTED:
             st.warning(
@@ -838,7 +838,7 @@ def render_console_page():
             action_desc = st.text_area(" ", placeholder="Describe the scene...", key="action_desc_s2", height=100, label_visibility="collapsed")
         else:
             sd_prompt = st.text_area(" ", placeholder="Describe your vision...", height=100, key="sd_prompt_input", label_visibility="collapsed")
-        if st.button("RESET", key="console_reset_btn", use_container_width=True):
+        if st.button("RESET", key="console_reset_btn", width="stretch"):
             st.session_state["_console_reset_pending"] = True
             st.rerun()
 
@@ -900,15 +900,15 @@ def render_console_page():
                     for im in r["images"]:
                         if not im.get("error"):
                             img_src = im.get("image_path") if im.get("image_path") and os.path.exists(im.get("image_path", "")) else im.get("image_url")
-                            if img_src: st.image(img_src, use_container_width=True)
+                            if img_src: st.image(img_src, width="stretch")
                 elif r.get("image_url"):
-                    st.image(r["image_url"], use_container_width=True)
+                    st.image(r["image_url"], width="stretch")
             # Buttons: PREVIEW + GENERATE
             st.markdown('<div class="generate-btn-wrap">', unsafe_allow_html=True)
             if model_sel == "SEEDANCE 2.0":
-                generate_clicked = st.button("GENERATE", type="primary", use_container_width=True, key="s2_production_opt")
+                generate_clicked = st.button("GENERATE", type="primary", width="stretch", key="s2_production_opt")
             else:
-                generate_clicked = st.button("GENERATE (Seedream)", type="primary", use_container_width=True, key="sd_production_opt")
+                generate_clicked = st.button("GENERATE (Seedream)", type="primary", width="stretch", key="sd_production_opt")
             st.markdown('</div>', unsafe_allow_html=True)
 
         elif has_prompt and not has_result:
@@ -934,9 +934,9 @@ def render_console_page():
             # Buttons: PREVIEW (redo) + GENERATE
             st.markdown('<div class="generate-btn-wrap">', unsafe_allow_html=True)
             if model_sel == "SEEDANCE 2.0":
-                generate_clicked = st.button("GENERATE", type="primary", use_container_width=True, key="s2_production_opt")
+                generate_clicked = st.button("GENERATE", type="primary", width="stretch", key="s2_production_opt")
             else:
-                generate_clicked = st.button("GENERATE (Seedream)", type="primary", use_container_width=True, key="sd_production_opt")
+                generate_clicked = st.button("GENERATE (Seedream)", type="primary", width="stretch", key="sd_production_opt")
             st.markdown('</div>', unsafe_allow_html=True)
 
         elif has_json and not has_result and not has_prompt:
@@ -953,9 +953,9 @@ def render_console_page():
 
             st.markdown('<div class="generate-btn-wrap">', unsafe_allow_html=True)
             if model_sel == "SEEDANCE 2.0":
-                generate_clicked = st.button("GENERATE", use_container_width=True, key="s2_production_opt")
+                generate_clicked = st.button("GENERATE", width="stretch", key="s2_production_opt")
             else:
-                generate_clicked = st.button("GENERATE (Seedream)", use_container_width=True, key="sd_production_opt")
+                generate_clicked = st.button("GENERATE (Seedream)", width="stretch", key="sd_production_opt")
             st.markdown('</div>', unsafe_allow_html=True)
 
         else:
@@ -971,9 +971,9 @@ def render_console_page():
             # GENERATE visible even before preview
             st.markdown('<div class="generate-btn-wrap">', unsafe_allow_html=True)
             if model_sel == "SEEDANCE 2.0":
-                generate_clicked = st.button("GENERATE", use_container_width=True, key="s2_production_opt")
+                generate_clicked = st.button("GENERATE", width="stretch", key="s2_production_opt")
             else:
-                generate_clicked = st.button("GENERATE (Seedream)", use_container_width=True, key="sd_production_opt")
+                generate_clicked = st.button("GENERATE (Seedream)", width="stretch", key="sd_production_opt")
             st.markdown('</div>', unsafe_allow_html=True)
 
         if generate_clicked:
@@ -1049,19 +1049,19 @@ def render_console_page():
 
         _save_console_param_snapshot()
 
-        if st.button("GALLERY", key="top_gallery_btn", use_container_width=True):
+        if st.button("GALLERY", key="top_gallery_btn", width="stretch"):
             st.session_state["_console_was_away"] = True
             st.session_state.active_page = "gallery"
             st.rerun()
-        if st.button("STORYBOARD", key="top_sb_images_btn", use_container_width=True):
+        if st.button("STORYBOARD", key="top_sb_images_btn", width="stretch"):
             st.session_state["_console_was_away"] = True
             st.session_state.active_page = "storyboard"
             st.rerun()
-        if st.button("REFERENCES", key="top_references_quick_btn", use_container_width=True):
+        if st.button("REFERENCES", key="top_references_quick_btn", width="stretch"):
             st.session_state["_console_was_away"] = True
             st.session_state.active_page = "references"
             st.rerun()
-        if st.button("EDITING", key="top_sb_video_btn", use_container_width=True):
+        if st.button("EDITING", key="top_sb_video_btn", width="stretch"):
             st.session_state["_console_was_away"] = True
             st.session_state.active_page = "editing"
             st.rerun()
