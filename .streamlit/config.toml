@@ -1,6 +1,4 @@
 [server]
 enableStaticServing = true
-
-[server]
 fileWatcherType = "poll"
 folderWatchBlacklist = ["backups", "data/generated", ".git"]
