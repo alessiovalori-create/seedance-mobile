@@ -12,12 +12,18 @@ from arkitect.storage import load_projects, save_projects
 
 def render_projects_page():
     """Render the Projects page (list / create / delete projects)."""
-    from ui_app import (
-        _render_project_name_inline_right,
+    _run_id = st.session_state.get("_streamlit_run_id", 0)
+    if st.session_state.get(f"_rendered_projects_{_run_id}"):
+        return
+    st.session_state[f"_rendered_projects_{_run_id}"] = True
+
+    from arkitect.console_state import (
         _clear_console_prompts_for_project_change,
-        _save_project_console_settings,
         _load_project_console_settings,
+        _save_console_param_snapshot,
+        _save_project_console_settings,
     )
+    from ui_app import _render_project_name_inline_right
 
     # ── Navigation ──
     if "proj_nav" not in st.session_state:
@@ -184,7 +190,12 @@ def render_projects_page():
                         _save_project_console_settings(prev_pid)
                     _clear_console_prompts_for_project_change()
                     _load_project_console_settings(pid)
-                    st.session_state["_project_just_switched"] = True
+                    # Sync the in-memory snapshot with the newly loaded project params
+                    # so _restore_console_param_snapshot() doesn't overwrite them.
+                    _save_console_param_snapshot()
+                    # Clear the was_away flag so restore doesn't re-run on top of this.
+                    st.session_state["_console_was_away"] = False
+                    st.session_state.pop("_project_just_switched", None)
                 return
 
     _col_main, _col_side = st.columns([4, 1], gap="large")

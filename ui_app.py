@@ -1663,7 +1663,10 @@ if check_password():
     for i in range(max_seeds):
         if f'seed_input_{i}' not in st.session_state: st.session_state[f'seed_input_{i}'] = str(random.randint(1, 1000000))
 
-
+    # Increment run ID each script execution to reset page guards
+    if "_streamlit_run_id" not in st.session_state:
+        st.session_state["_streamlit_run_id"] = 0
+    st.session_state["_streamlit_run_id"] += 1
 
     if st.session_state.get("active_page") == "gallery":
         render_gallery_page()

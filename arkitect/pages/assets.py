@@ -17,6 +17,11 @@ from arkitect.storage import (
 
 def render_assets_page():
     """Render the Assets page (uploaded image/video/audio catalog)."""
+    _run_id = st.session_state.get("_streamlit_run_id", 0)
+    if st.session_state.get(f"_rendered_assets_{_run_id}"):
+        return
+    st.session_state[f"_rendered_assets_{_run_id}"] = True
+
     from ui_app import _render_project_name_inline_right
 
     # ── Navigation ──
