@@ -8,6 +8,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from arkitect.storage import load_projects, save_projects
+from arkitect.ui_helpers import _render_project_name_inline_right
 
 
 def render_projects_page():
@@ -23,7 +24,6 @@ def render_projects_page():
         _save_console_param_snapshot,
         _save_project_console_settings,
     )
-    from ui_app import _render_project_name_inline_right
 
     # ── Navigation ──
     if "proj_nav" not in st.session_state:

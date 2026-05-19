@@ -1,5 +1,6 @@
 import streamlit as st
 
+from arkitect.ui_helpers import _render_project_name_inline_right
 from arkitect.storyboard_io import (
     _render_storyboard_save_load,
     _render_storyboard_projects_sidebar,
@@ -10,8 +11,6 @@ from arkitect.storyboard_io import (
 
 def render_storyboard_page():
     """Render the Storyboard page (image grid + save/load)."""
-    from ui_app import _render_project_name_inline_right
-
     if "sbi_nav" not in st.session_state:
         st.session_state.sbi_nav = "Storyboard"
     elif st.session_state.sbi_nav not in ("Console", "Projects", "Gallery", "Assets", "References", "Storyboard", "Editing"):
@@ -62,8 +61,6 @@ def render_storyboard_page():
 
 def render_editing_page():
     """Render the Editing page (video timeline + save/load)."""
-    from ui_app import _render_project_name_inline_right
-
     if "sbv_nav" not in st.session_state:
         st.session_state.sbv_nav = "Editing"
     elif st.session_state.sbv_nav not in ("Console", "Projects", "Gallery", "Assets", "References", "Storyboard", "Editing"):

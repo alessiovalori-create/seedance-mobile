@@ -1,6 +1,3 @@
-# PHASE 2B NOTE: _autosave_storyboard_snapshot and _render_project_name_inline_right
-# are shared with Storyboard/Projects — late-imported from ui_app until step B6.
-
 import os
 import re
 import json
@@ -18,6 +15,8 @@ import streamlit.components.v1 as components
 from generator import PEXELS_API_KEY, UNSPLASH_API_KEY
 from arkitect.shared import _REFERENCES_DIR
 from arkitect.storage import add_to_assets
+from arkitect.storyboard_io import _autosave_storyboard_snapshot
+from arkitect.ui_helpers import _render_project_name_inline_right
 
 _REFS_STOCK_IFRAME_CSS = """<style>
 *{margin:0;padding:0;box-sizing:border-box;}
@@ -764,7 +763,6 @@ def _refs_send_selected_to_storyboard():
     st.session_state.refs_selected_wiki = set()
     st.session_state.refs_selected_google_arts = set()
     st.session_state.selected_images = {}
-    from ui_app import _autosave_storyboard_snapshot
     _autosave_storyboard_snapshot()
     return added, skipped_dup, failed
 
@@ -969,8 +967,6 @@ def _refs_send_selected_to_assets():
 
 def render_references_page():
     """Render the References page (Pexels/Unsplash/Wikimedia/Met/Google Arts)."""
-    from ui_app import _render_project_name_inline_right
-
     # ── Navigation (same active_page routing pattern) ──
     if "refs_nav" not in st.session_state:
         st.session_state.refs_nav = "References"

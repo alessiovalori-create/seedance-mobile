@@ -1,5 +1,3 @@
-# PHASE 2B NOTE: _render_project_name_inline_right is shared — late-imported from ui_app until step B6.
-
 import os
 import html as _html_stdlib
 
@@ -11,6 +9,7 @@ from arkitect.storage import (
     add_to_assets,
     get_active_project_id,
 )
+from arkitect.ui_helpers import _render_project_name_inline_right
 
 
 
@@ -21,8 +20,6 @@ def render_assets_page():
     if st.session_state.get(f"_rendered_assets_{_run_id}"):
         return
     st.session_state[f"_rendered_assets_{_run_id}"] = True
-
-    from ui_app import _render_project_name_inline_right
 
     # ── Navigation ──
     if "assets_nav" not in st.session_state:

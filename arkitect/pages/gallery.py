@@ -1,6 +1,3 @@
-# PHASE 2B NOTE: _render_project_name_inline_right is shared — late-imported from ui_app until step B6.
-# Storyboard/editing helpers come from arkitect.storyboard_io.
-
 import os
 import json
 import re
@@ -14,6 +11,7 @@ from arkitect.storyboard_io import (
     _normalize_editing_video_item,
     _get_thumbnail_src_resized,
 )
+from arkitect.ui_helpers import _render_project_name_inline_right
 from arkitect.storage import (
     get_active_project_id,
     add_to_assets,
@@ -211,8 +209,6 @@ def _render_gallery_sidebar():
 
 def render_gallery_page():
     """Render the Gallery page (generated videos and images)."""
-    from ui_app import _render_project_name_inline_right
-
     GALLERY_PER_PAGE = 20
     GALLERY_COLS = 5
     def _gallery_item_created_at(item):
