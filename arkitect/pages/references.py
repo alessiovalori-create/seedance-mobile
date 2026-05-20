@@ -2875,7 +2875,7 @@ try { inp.blur(); } catch (e3) {}
                 )
                 col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 1], gap="small")
                 with col_btn1:
-                    if st.button("STORYBOARD", key="refs_bar_storyboard_btn_wiki", width="stretch"):
+                    if st.button("STORYBOARD", key="refs_bar_storyboard_btn_wiki", use_container_width=True):
                         _a, _dup, _fail = _refs_send_selected_to_storyboard()
                         _parts = []
                         if _a:
@@ -2887,7 +2887,7 @@ try { inp.blur(); } catch (e3) {}
                         st.toast(". ".join(_parts) if _parts else "Nothing added.")
                         st.rerun()
                 with col_btn2:
-                    if st.button("ASSET", key="refs_bar_asset_btn_wiki", width="stretch"):
+                    if st.button("ASSET", key="refs_bar_asset_btn_wiki", use_container_width=True):
                         _sv, _fl = _refs_send_selected_to_assets()
                         if _sv:
                             st.toast(f"Saved {_sv} image(s) to Assets" + (f" ({_fl} failed)" if _fl else ""))
@@ -2897,7 +2897,7 @@ try { inp.blur(); } catch (e3) {}
                             st.toast("Nothing saved.")
                         st.rerun()
                 with col_btn3:
-                    if st.button("CLEAR", key="refs_wiki_clear_sel", width="stretch", disabled=(_refs_wiki_n_sel == 0)):
+                    if st.button("CLEAR", key="refs_wiki_clear_sel", use_container_width=True, disabled=(_refs_wiki_n_sel == 0)):
                         st.session_state.refs_selected_wiki = set()
                         if "selected_images" in st.session_state:
                             for _k in list(st.session_state.selected_images.keys()):

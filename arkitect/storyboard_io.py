@@ -218,7 +218,7 @@ def _render_storyboard_projects_sidebar():
         label_visibility="collapsed",
         placeholder="Storyboard name...",
     )
-    if st.button("NEW STORYBOARD", key="sbi_sidebar_new_btn", width="stretch"):
+    if st.button("NEW STORYBOARD", key="sbi_sidebar_new_btn", use_container_width=True):
         name = (new_sb_name or "").strip()
         if name:
             snaps = load_all_snapshots()
@@ -242,7 +242,7 @@ def _render_storyboard_projects_sidebar():
         '<hr style="border:none;border-top:1px solid #2a2a28;margin:16px 0;">',
         unsafe_allow_html=True,
     )
-    if st.button("DELETE", key="sbi_sidebar_delete_btn", width="stretch"):
+    if st.button("DELETE", key="sbi_sidebar_delete_btn", use_container_width=True):
         name = st.session_state.get("sb_active_name")
         mode = st.session_state.get("sb_mode")
         if not name or mode not in ("new", "loaded"):
@@ -267,7 +267,7 @@ def _render_storyboard_projects_sidebar():
     )
     _is_browse = st.session_state.get("sb_mode") is None
     _all_lbl = "ALL STORYBOARDS" + (" ✓" if _is_browse else "")
-    if st.button(_all_lbl, key="sbi_sidebar_all_btn", width="stretch"):
+    if st.button(_all_lbl, key="sbi_sidebar_all_btn", use_container_width=True):
         st.session_state.sb_mode = None
         st.session_state.sb_active_name = ""
         st.session_state.sb_active_images = []
@@ -278,7 +278,7 @@ def _render_storyboard_projects_sidebar():
         '<hr style="border:none;border-top:1px solid #2a2a28;margin:16px 0;">',
         unsafe_allow_html=True,
     )
-    if st.button("CLEAR", key="sbi_sidebar_clear_btn", width="stretch"):
+    if st.button("CLEAR", key="sbi_sidebar_clear_btn", use_container_width=True):
         st.session_state.sb_active_images = []
         st.session_state.gallery_selected_imgs = set()
         st.session_state.sb_mode = None
@@ -301,7 +301,7 @@ def _render_editing_projects_sidebar():
         label_visibility="collapsed",
         placeholder="Editing name...",
     )
-    if st.button("NEW EDITING", key="ed_sidebar_new_btn", width="stretch"):
+    if st.button("NEW EDITING", key="ed_sidebar_new_btn", use_container_width=True):
         name = (new_ed_name or "").strip()
         if name:
             snaps = load_all_snapshots()
@@ -325,7 +325,7 @@ def _render_editing_projects_sidebar():
         '<hr style="border:none;border-top:1px solid #2a2a28;margin:16px 0;">',
         unsafe_allow_html=True,
     )
-    if st.button("DELETE", key="ed_sidebar_delete_btn", width="stretch"):
+    if st.button("DELETE", key="ed_sidebar_delete_btn", use_container_width=True):
         name = st.session_state.get("ed_active_name")
         mode = st.session_state.get("ed_mode")
         if not name or mode not in ("new", "loaded"):
@@ -350,7 +350,7 @@ def _render_editing_projects_sidebar():
     )
     _is_browse_ed = st.session_state.get("ed_mode") is None
     _all_ed_lbl = "ALL EDITINGS" + (" ✓" if _is_browse_ed else "")
-    if st.button(_all_ed_lbl, key="ed_sidebar_all_btn", width="stretch"):
+    if st.button(_all_ed_lbl, key="ed_sidebar_all_btn", use_container_width=True):
         st.session_state.ed_mode = None
         st.session_state.ed_active_name = ""
         st.session_state.ed_active_videos = []
@@ -361,7 +361,7 @@ def _render_editing_projects_sidebar():
         '<hr style="border:none;border-top:1px solid #2a2a28;margin:16px 0;">',
         unsafe_allow_html=True,
     )
-    if st.button("CLEAR", key="ed_sidebar_clear_btn", width="stretch"):
+    if st.button("CLEAR", key="ed_sidebar_clear_btn", use_container_width=True):
         st.session_state.ed_active_videos = []
         st.session_state.gallery_selected_vids = set()
         st.session_state.ed_mode = None
@@ -1948,7 +1948,7 @@ def _render_storyboard_save_load(page_prefix, key_suffix="", use_projects_layout
                 col_new, col_upload = st.columns([1, 1], gap="small")
 
                 with col_new:
-                    if st.button("＋ NEW STORYBOARD", key=f"sb_btn_new{key_suffix}", width="stretch"):
+                    if st.button("＋ NEW STORYBOARD", key=f"sb_btn_new{key_suffix}", use_container_width=True):
                         st.session_state.sb_mode = "new"
                         st.session_state.sb_active_name = ""
                         st.session_state.sb_active_images = []
@@ -1956,7 +1956,7 @@ def _render_storyboard_save_load(page_prefix, key_suffix="", use_projects_layout
 
                 with col_upload:
                     if sb_names:
-                        if st.button("⬆ UPLOAD STORYBOARD", key=f"sb_btn_upload{key_suffix}", width="stretch"):
+                        if st.button("⬆ UPLOAD STORYBOARD", key=f"sb_btn_upload{key_suffix}", use_container_width=True):
                             st.session_state.sb_mode = "pick"
                             st.rerun()
                     else:
@@ -1968,7 +1968,7 @@ def _render_storyboard_save_load(page_prefix, key_suffix="", use_projects_layout
 
             if not sb_names:
                 st.info("No saved storyboards.")
-                if st.button("BACK", key=f"sb_cancel_pick_empty{key_suffix}", width="stretch"):
+                if st.button("BACK", key=f"sb_cancel_pick_empty{key_suffix}", use_container_width=True):
                     st.session_state.sb_mode = None
                     st.rerun()
             else:
@@ -2034,7 +2034,7 @@ def _render_storyboard_save_load(page_prefix, key_suffix="", use_projects_layout
                                 )
 
                             # Click to load
-                            if st.button(sname, key=f"sb_pick_card_{sb_flat}{key_suffix}", width="stretch"):
+                            if st.button(sname, key=f"sb_pick_card_{sb_flat}{key_suffix}", use_container_width=True):
                                 raw = snaps_data.get(sname, [])
                                 items = snapshot_entry_items(raw)
                                 st.session_state.sb_active_images = items
@@ -2049,7 +2049,7 @@ def _render_storyboard_save_load(page_prefix, key_suffix="", use_projects_layout
                             )
 
                 st.markdown("")
-                if st.button("BACK", key=f"sb_cancel_pick{key_suffix}", width="stretch"):
+                if st.button("BACK", key=f"sb_cancel_pick{key_suffix}", use_container_width=True):
                     st.session_state.sb_mode = None
                     st.rerun()
 
@@ -2274,7 +2274,7 @@ def _render_storyboard_save_load(page_prefix, key_suffix="", use_projects_layout
                 col_new, col_upload = st.columns([1, 1], gap="small")
 
                 with col_new:
-                    if st.button("＋ NEW EDITING", key=f"ed_btn_new{key_suffix}", width="stretch"):
+                    if st.button("＋ NEW EDITING", key=f"ed_btn_new{key_suffix}", use_container_width=True):
                         st.session_state.ed_mode = "new"
                         st.session_state.ed_active_name = ""
                         st.session_state.ed_active_videos = []
@@ -2282,7 +2282,7 @@ def _render_storyboard_save_load(page_prefix, key_suffix="", use_projects_layout
 
                 with col_upload:
                     if ed_names:
-                        if st.button("⬆ UPLOAD EDITING", key=f"ed_btn_upload{key_suffix}", width="stretch"):
+                        if st.button("⬆ UPLOAD EDITING", key=f"ed_btn_upload{key_suffix}", use_container_width=True):
                             st.session_state.ed_mode = "pick"
                             st.rerun()
                     else:
@@ -2294,7 +2294,7 @@ def _render_storyboard_save_load(page_prefix, key_suffix="", use_projects_layout
 
             if not ed_names:
                 st.info("No saved editing sessions.")
-                if st.button("BACK", key=f"ed_cancel_pick_empty{key_suffix}", width="stretch"):
+                if st.button("BACK", key=f"ed_cancel_pick_empty{key_suffix}", use_container_width=True):
                     st.session_state.ed_mode = None
                     st.rerun()
             else:
@@ -2374,7 +2374,7 @@ def _render_storyboard_save_load(page_prefix, key_suffix="", use_projects_layout
                                     unsafe_allow_html=True,
                                 )
 
-                            if st.button(ename, key=f"ed_pick_card_{ed_flat}{key_suffix}", width="stretch"):
+                            if st.button(ename, key=f"ed_pick_card_{ed_flat}{key_suffix}", use_container_width=True):
                                 raw = ed_snaps_data.get(ename, [])
                                 items = snapshot_entry_items(raw)
                                 st.session_state.ed_active_videos = [
@@ -2391,7 +2391,7 @@ def _render_storyboard_save_load(page_prefix, key_suffix="", use_projects_layout
                             )
 
                 st.markdown("")
-                if st.button("BACK", key=f"ed_cancel_pick{key_suffix}", width="stretch"):
+                if st.button("BACK", key=f"ed_cancel_pick{key_suffix}", use_container_width=True):
                     st.session_state.ed_mode = None
                     st.rerun()
 

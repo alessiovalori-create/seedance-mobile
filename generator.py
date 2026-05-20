@@ -436,6 +436,8 @@ def generate_video(prompt_text, scene_description, images=[], videos=[], audios=
     if _file_count > 12:
         return f"Too many input files ({_file_count}). Seedance 2.0 allows max 12 mixed files (images + videos + audios)."
 
+    print(f"[DEBUG-GV] content_list items: {len(content_list)}, types: {[it.get('type') for it in content_list if isinstance(it, dict)]}")
+
     try:
         seed_int = int(seed) if seed and str(seed).strip() != "-1" else None
     except (ValueError, TypeError):
@@ -469,14 +471,27 @@ def generate_video(prompt_text, scene_description, images=[], videos=[], audios=
         "watermark": bool(kwargs.get("watermark", False)),
         "return_last_frame": True,
     }
-    # Offline inference: 50% cost via flex tier
-    if is_offline:
+    # service_tier not supported in r2v mode (reference images present)
+    _has_ref_image = any(
+        isinstance(it, dict) and it.get("role") == "reference_image"
+        for it in content_list
+    )
+    if service_tier and service_tier.lower() in ("flex", "offline") and not _has_ref_image:
         payload["service_tier"] = "flex"
     has_video_reference = any((it or {}).get("type") == "video_url" for it in content_list if isinstance(it, dict))
 
+    print(f"[DEBUG-GV] payload keys: {list(payload.keys())}, model: {payload.get('model')}")
+
     try:
         _session = _session_for_ark()
-        response = _session.post(VIDEO_TASK_URL, headers=headers, json=payload, timeout=30, verify=_ssl_verify)
+        print(f"[DEBUG-GV] calling API...")
+        try:
+            response = _session.post(VIDEO_TASK_URL, headers=headers, json=payload, timeout=30, verify=_ssl_verify)
+            print(f"[DEBUG-GV] API response status: {response.status_code}")
+            print(f"[DEBUG-GV] API response: {response.text[:200]}")
+        except Exception as e:
+            print(f"[DEBUG-GV-ERROR] {type(e).__name__}: {e}")
+            return f"Video API Error: {e}"
         if not response.ok:
             try:
                 err_body = response.json()

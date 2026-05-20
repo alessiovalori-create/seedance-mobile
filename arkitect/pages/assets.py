@@ -135,7 +135,7 @@ def render_assets_page():
         if total_pages > 1:
             pn1, pn2, pn3 = st.columns([1, 2, 1])
             with pn1:
-                if st.button("← PREV", key="assets_prev", width="stretch",
+                if st.button("← PREV", key="assets_prev", use_container_width=True,
                              disabled=(current_page == 0)):
                     st.session_state.assets_page -= 1
                     st.rerun()
@@ -146,7 +146,7 @@ def render_assets_page():
                     unsafe_allow_html=True,
                 )
             with pn3:
-                if st.button("NEXT →", key="assets_next", width="stretch",
+                if st.button("NEXT →", key="assets_next", use_container_width=True,
                              disabled=(current_page >= total_pages - 1)):
                     st.session_state.assets_page += 1
                     st.rerun()

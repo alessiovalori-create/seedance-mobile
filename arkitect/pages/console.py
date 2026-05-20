@@ -807,24 +807,24 @@ def render_console_page():
                             _sd_ref_tag_map[_n] = f"@Image {_i + 1}"
                 st.session_state["_console_ref_tag_map"] = _sd_ref_tag_map
 
-        if st.button("PROJECTS", key="top_projects_btn", width="stretch"):
+        if st.button("PROJECTS", key="top_projects_btn", use_container_width=True):
             _save_console_param_snapshot()
             st.session_state["_console_was_away"] = True
             st.session_state.active_page = "projects"
             st.rerun()
 
-        if st.button("ASSETS", key="top_assets_btn", width="stretch"):
+        if st.button("ASSETS", key="top_assets_btn", use_container_width=True):
             _save_console_param_snapshot()
             st.session_state["_console_was_away"] = True
             st.session_state.active_page = "assets"
             st.rerun()
 
-        json_clicked = st.button("JSON", width="stretch", key="json_settings_btn")
+        json_clicked = st.button("JSON", use_container_width=True, key="json_settings_btn")
 
         if model_sel == "SEEDANCE 2.0":
-            preview_clicked = st.button("PREVIEW PROMPT", width="stretch", key="preview_prompt_btn")
+            preview_clicked = st.button("PREVIEW PROMPT", use_container_width=True, key="preview_prompt_btn")
         else:
-            preview_clicked = st.button("PREVIEW PROMPT (Seedream)", width="stretch", key="sd_preview_btn")
+            preview_clicked = st.button("PREVIEW PROMPT (Seedream)", use_container_width=True, key="sd_preview_btn")
 
         if not _STATIC_SERVING_SUPPORTED:
             st.warning(
@@ -838,7 +838,7 @@ def render_console_page():
             action_desc = st.text_area(" ", placeholder="Describe the scene...", key="action_desc_s2", height=100, label_visibility="collapsed")
         else:
             sd_prompt = st.text_area(" ", placeholder="Describe your vision...", height=100, key="sd_prompt_input", label_visibility="collapsed")
-        if st.button("RESET", key="console_reset_btn", width="stretch"):
+        if st.button("RESET", key="console_reset_btn", use_container_width=True):
             st.session_state["_console_reset_pending"] = True
             st.rerun()
 
@@ -853,6 +853,19 @@ def render_console_page():
                 with shot_tabs[2]:
                     if st.toggle("Enable Shot 3", key="en_s3"):
                         shots_data.append(render_shot_panel(3, key_prefix="s"))
+
+                # Auto-sync Duration slider to max shot end time
+                if shots_data:
+                    _max_shot_end = 0
+                    for _shot in shots_data:
+                        _m1_end = _shot.get('m1_end') or 0
+                        _m2_end = _shot.get('m2_end') or 0
+                        _max_shot_end = max(_max_shot_end, int(_m1_end), int(_m2_end))
+                    if _max_shot_end >= 4:
+                        # Clamp to valid range [4, 15]
+                        _max_shot_end = min(max(_max_shot_end, 4), 15)
+                        if st.session_state.get('common_duration') != _max_shot_end:
+                            st.session_state['common_duration'] = _max_shot_end
             else:
                 with st.expander("Shot type", expanded=False):
                     sd_shot_type = st.selectbox("Shot Type", LIST_SHOT_TYPES, key="sd_shot_type")
@@ -906,9 +919,9 @@ def render_console_page():
             # Buttons: PREVIEW + GENERATE
             st.markdown('<div class="generate-btn-wrap">', unsafe_allow_html=True)
             if model_sel == "SEEDANCE 2.0":
-                generate_clicked = st.button("GENERATE", type="primary", width="stretch", key="s2_production_opt")
+                generate_clicked = st.button("GENERATE", type="primary", use_container_width=True, key="s2_production_opt")
             else:
-                generate_clicked = st.button("GENERATE (Seedream)", type="primary", width="stretch", key="sd_production_opt")
+                generate_clicked = st.button("GENERATE (Seedream)", type="primary", use_container_width=True, key="sd_production_opt")
             st.markdown('</div>', unsafe_allow_html=True)
 
         elif has_prompt and not has_result:
@@ -934,9 +947,9 @@ def render_console_page():
             # Buttons: PREVIEW (redo) + GENERATE
             st.markdown('<div class="generate-btn-wrap">', unsafe_allow_html=True)
             if model_sel == "SEEDANCE 2.0":
-                generate_clicked = st.button("GENERATE", type="primary", width="stretch", key="s2_production_opt")
+                generate_clicked = st.button("GENERATE", type="primary", use_container_width=True, key="s2_production_opt")
             else:
-                generate_clicked = st.button("GENERATE (Seedream)", type="primary", width="stretch", key="sd_production_opt")
+                generate_clicked = st.button("GENERATE (Seedream)", type="primary", use_container_width=True, key="sd_production_opt")
             st.markdown('</div>', unsafe_allow_html=True)
 
         elif has_json and not has_result and not has_prompt:
@@ -953,9 +966,9 @@ def render_console_page():
 
             st.markdown('<div class="generate-btn-wrap">', unsafe_allow_html=True)
             if model_sel == "SEEDANCE 2.0":
-                generate_clicked = st.button("GENERATE", width="stretch", key="s2_production_opt")
+                generate_clicked = st.button("GENERATE", use_container_width=True, key="s2_production_opt")
             else:
-                generate_clicked = st.button("GENERATE (Seedream)", width="stretch", key="sd_production_opt")
+                generate_clicked = st.button("GENERATE (Seedream)", use_container_width=True, key="sd_production_opt")
             st.markdown('</div>', unsafe_allow_html=True)
 
         else:
@@ -971,9 +984,9 @@ def render_console_page():
             # GENERATE visible even before preview
             st.markdown('<div class="generate-btn-wrap">', unsafe_allow_html=True)
             if model_sel == "SEEDANCE 2.0":
-                generate_clicked = st.button("GENERATE", width="stretch", key="s2_production_opt")
+                generate_clicked = st.button("GENERATE", use_container_width=True, key="s2_production_opt")
             else:
-                generate_clicked = st.button("GENERATE (Seedream)", width="stretch", key="sd_production_opt")
+                generate_clicked = st.button("GENERATE (Seedream)", use_container_width=True, key="sd_production_opt")
             st.markdown('</div>', unsafe_allow_html=True)
 
         if generate_clicked:
@@ -1049,19 +1062,19 @@ def render_console_page():
 
         _save_console_param_snapshot()
 
-        if st.button("GALLERY", key="top_gallery_btn", width="stretch"):
+        if st.button("GALLERY", key="top_gallery_btn", use_container_width=True):
             st.session_state["_console_was_away"] = True
             st.session_state.active_page = "gallery"
             st.rerun()
-        if st.button("STORYBOARD", key="top_sb_images_btn", width="stretch"):
+        if st.button("STORYBOARD", key="top_sb_images_btn", use_container_width=True):
             st.session_state["_console_was_away"] = True
             st.session_state.active_page = "storyboard"
             st.rerun()
-        if st.button("REFERENCES", key="top_references_quick_btn", width="stretch"):
+        if st.button("REFERENCES", key="top_references_quick_btn", use_container_width=True):
             st.session_state["_console_was_away"] = True
             st.session_state.active_page = "references"
             st.rerun()
-        if st.button("EDITING", key="top_sb_video_btn", width="stretch"):
+        if st.button("EDITING", key="top_sb_video_btn", use_container_width=True):
             st.session_state["_console_was_away"] = True
             st.session_state.active_page = "editing"
             st.rerun()
@@ -1215,19 +1228,33 @@ def render_console_page():
         else:
             chosen_prompt = st.session_state.get("s2_opt_prompt", "")
             print(f"[DEBUG-GEN-S2] s2_images={len(s2_images) if s2_images else 0}, s2_videos={len(s2_videos) if s2_videos else 0}, s2_audio={len(s2_audio) if s2_audio else 0}, workflow={s2_workflow}")
+            if s2_images:
+                for _i, _img in enumerate(s2_images):
+                    _has_getval = hasattr(_img, 'getvalue')
+                    _has_name = hasattr(_img, 'name')
+                    _type = type(_img).__name__
+                    print(f"[DEBUG-IMG-{_i}] type={_type}, has_getvalue={_has_getval}, has_name={_has_name}, value={str(_img)[:80] if not _has_getval else 'file_obj'}")
             with st.spinner("Generating Seedance 2.0... please wait 3-5 minutes"):
-                result = generate_video(
-                    prompt_text=chosen_prompt, scene_description=(action_desc or "")[:20],
-                    images=s2_images, videos=s2_videos, audios=s2_audio,
-                    image_usage=image_usage,
-                    seed=st.session_state.get('seed_input_0', "-1"),
-                    resolution=resolution, aspect_ratio=aspect_ratio, duration=duration,
-                    generate_audio=(gen_audio or st.session_state.get("s2_audio_output", False)),
-                    audio_details=audio_details_dict,
-                    is_draft=(gen_mode == "Draft Mode (Preview)"), is_offline=(gen_mode == "Offline (50% Cost)"),
-                    watermark=st.session_state.get("s2_watermark", False),
-                    model_id=SEEDANCE_2_0_MODEL_ID, shots_data=shots_data,
-                )
+                print(f"[DEBUG-PRE-GENERATE] About to call generate_video, images type: {type(s2_images)}, first image type: {type(s2_images[0]) if s2_images else 'none'}")
+                try:
+                    result = generate_video(
+                        prompt_text=chosen_prompt, scene_description=(action_desc or "")[:20],
+                        images=s2_images, videos=s2_videos, audios=s2_audio,
+                        image_usage=image_usage,
+                        seed=st.session_state.get('seed_input_0', "-1"),
+                        resolution=resolution, aspect_ratio=aspect_ratio, duration=duration,
+                        generate_audio=(gen_audio or st.session_state.get("s2_audio_output", False)),
+                        audio_details=audio_details_dict,
+                        is_draft=(gen_mode == "Draft Mode (Preview)"), is_offline=(gen_mode == "Offline (50% Cost)"),
+                        watermark=st.session_state.get("s2_watermark", False),
+                        model_id=SEEDANCE_2_0_MODEL_ID, shots_data=shots_data,
+                    )
+                    print(f"[DEBUG-POST-GENERATE] result type={type(result).__name__}, value={str(result)[:200]}")
+                except Exception as e:
+                    print(f"[DEBUG-GENERATE-ERROR] {type(e).__name__}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    result = {"error": str(e)}
                 if isinstance(result, dict) and result.get("video"):
                     st.session_state.s2_last_result = result
                     _s2_est_cost = estimate_cost(
