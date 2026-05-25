@@ -590,32 +590,74 @@ SEEDREAM_4_5_MODEL_ID = "seedream-4-5-251128"     # ByteDance-Seedream-4.5
 SEEDREAM_5_0_LITE_MODEL_ID = os.getenv("SEEDREAM_5_MODEL_ID", "seedream-5-0-260128") 
 
 # ── Cost estimation ──────────────────────────────────────────
-def _estimate_seedance2_tokens(duration=5, resolution="720p"):
-    """Estimate Seedance 2.0 tokens from official 5s 720p baseline."""
+def _estimate_seedance2_tokens(duration=5, resolution="720p",
+                                has_video_input=False,
+                                input_video_duration=0,
+                                aspect_ratio="16:9"):
+    """
+    Estimate Seedance 2.0 token consumption using official ByteDance formula.
+    Formula: (input_video_duration + output_video_duration) × width × height × fps / 1024
+    """
+    # Official pixel dimensions (width × height) per resolution at 16:9
+    DIMENSIONS = {
+        "480p": (864, 496),
+        "720p": (1280, 720),
+        "1080p": (1920, 1080),
+    }
+    fps = 24
+    w, h = DIMENSIONS.get(str(resolution).strip(), (1280, 720))
     try:
-        dur = int(duration)
+        out_dur = int(duration)
     except (ValueError, TypeError):
-        dur = 5
-    if dur == -1:
-        dur = 5  # smart duration unknown before generation; use official baseline
-    dur = max(1, dur)
-    res_factor = 0.465 if str(resolution).strip() == "480p" else 1.0
-    # Official baseline: 5s 720p ~= 108,900 tokens
-    return int(round(108900 * (dur / 5.0) * res_factor))
+        out_dur = 5
+    if out_dur == -1:
+        out_dur = 5  # smart duration unknown before generation
+    out_dur = max(1, out_dur)
+    total_duration = int(input_video_duration or 0) + out_dur
+    tokens = total_duration * w * h * fps / 1024
+    return int(tokens)
 
 
-def _estimate_seedance2_usage(duration=5, resolution="720p", has_video_input=False):
-    """Return consumed tokens, pack deduction, and pay-as-you-go cost for Seedance 2.0."""
-    tokens_consumed = _estimate_seedance2_tokens(duration=duration, resolution=resolution)
-    rate_per_1k = 0.0043 if has_video_input else 0.0070
-    estimated_cost = (tokens_consumed / 1000.0) * rate_per_1k
-    deduction_ratio = 1.0 if has_video_input else 1.6279
-    tokens_deducted = int(round(tokens_consumed * deduction_ratio))
+def _estimate_seedance2_usage(duration=5, resolution="720p",
+                               has_video_input=False,
+                               input_video_duration=0,
+                               aspect_ratio="16:9"):
+    """
+    Estimate Seedance 2.0 cost using official ByteDance pricing.
+
+    Pricing (USD per K tokens):
+      480p/720p without video: $0.0070/K
+      480p/720p with video:    $0.0043/K
+      1080p without video:     $0.0077/K
+      1080p with video:        $0.0047/K
+    """
+    tokens = _estimate_seedance2_tokens(
+        duration=duration,
+        resolution=resolution,
+        has_video_input=has_video_input,
+        input_video_duration=input_video_duration,
+        aspect_ratio=aspect_ratio,
+    )
+
+    # Rate per K tokens based on resolution and video input
+    res = str(resolution).strip()
+    if res == "1080p":
+        rate_per_1k = 0.0047 if has_video_input else 0.0077
+    else:  # 480p, 720p
+        rate_per_1k = 0.0043 if has_video_input else 0.0070
+
+    tokens_k = tokens / 1000
+    cost = tokens_k * rate_per_1k
+
     return {
-        "tokens_consumed": tokens_consumed,
-        "tokens_deducted": tokens_deducted,
-        "estimated_cost": estimated_cost,
-        "has_video_input": bool(has_video_input),
+        "tokens_consumed": tokens,
+        "tokens_deducted": tokens,
+        "estimated_cost": round(cost, 4),
+        "rate_per_1k": rate_per_1k,
+        "resolution": resolution,
+        "has_video_input": has_video_input,
+        "input_video_duration": input_video_duration,
+        "output_duration": duration,
     }
 
 
@@ -628,7 +670,12 @@ def estimate_cost(model_id, resolution="720p", duration=5, generate_audio=False,
         res_cost = {"3K": 0.14, "2K": 0.07, "1K": 0.035, "4K": 0.14}
         return round(res_cost.get(resolution, 0.035), 4)
 
-    usage = _estimate_seedance2_usage(duration=duration, resolution=resolution, has_video_input=has_video_input)
+    usage = _estimate_seedance2_usage(
+        duration=duration,
+        resolution=resolution,
+        has_video_input=has_video_input,
+        aspect_ratio=aspect_ratio,
+    )
     cost = usage["estimated_cost"]
 
     # Add LLM prompt refinement cost (~$0.0005)
@@ -644,7 +691,12 @@ def format_cost_str(cost):
     return f"${cost:.2f}"
 
 COST_PER_SEC = {
-    "seedance-2": {"with_video_input": 0.0043, "without_video_input": 0.0070},  # $ / 1K tokens
+    "seedance-2": {
+        "with_video_input_720p": 0.0043,
+        "without_video_input_720p": 0.0070,
+        "with_video_input_1080p": 0.0047,
+        "without_video_input_1080p": 0.0077,
+    },
 }
 COST_SEEDREAM_PER_IMAGE = 0.040
 COST_SEED18_INPUT_PER_TOKEN = 0.000001
