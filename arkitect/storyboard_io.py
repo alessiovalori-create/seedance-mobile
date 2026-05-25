@@ -20,6 +20,7 @@ from arkitect.storage import (
     upsert_snapshot_entry,
     get_active_project_id,
     add_to_assets,
+    load_asset_catalog,
 )
 from arkitect.media_server import _to_media_url
 
