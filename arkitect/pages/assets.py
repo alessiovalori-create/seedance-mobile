@@ -8,8 +8,11 @@ from arkitect.storage import (
     save_asset_catalog,
     add_to_assets,
     get_active_project_id,
+    get_active_project_name,
+    next_project_image_asset_name,
 )
 from arkitect.ui_helpers import _render_project_name_inline_right
+from arkitect.console_state import _asset_picker_label
 
 
 
@@ -90,8 +93,19 @@ def render_assets_page():
     if uploaded_assets:
         ids_before = {a["id"] for a in load_asset_catalog()}
         saved_count = 0
+        active_proj = get_active_project_id()
+        proj_name = get_active_project_name()
         for uf in uploaded_assets:
-            result = add_to_assets(uploaded_file=uf)
+            mime = getattr(uf, "type", None) or ""
+            asset_name = None
+            if mime.startswith("image"):
+                ext = os.path.splitext(uf.name)[1].lower() or ".jpg"
+                asset_name = next_project_image_asset_name(
+                    project_id=active_proj,
+                    project_name=proj_name,
+                    ext=ext,
+                )
+            result = add_to_assets(uploaded_file=uf, asset_name=asset_name)
             if result and result.get("id") not in ids_before:
                 ids_before.add(result["id"])
                 saved_count += 1
@@ -117,6 +131,85 @@ def render_assets_page():
         f'{len(filtered)} files</p>',
         unsafe_allow_html=True,
     )
+
+    _img_assets_all = [a for a in catalog if a.get("type") == "image"]
+    if _img_assets_all:
+        with st.expander("Send to Console (Seedance 2.0 references)", expanded=False):
+            _pick_opts = {_asset_picker_label(a): a for a in _img_assets_all}
+            _picked_labels = st.multiselect(
+                "Select images (order = @Image 1, @Image 2, …)",
+                options=list(_pick_opts.keys()),
+                default=[
+                    x for x in st.session_state.get("assets_console_pick", [])
+                    if x in _pick_opts
+                ],
+                key="assets_console_pick",
+                placeholder="Choose images from Assets…",
+            )
+            if _picked_labels:
+                _tag_preview = " · ".join(
+                    f"@Image {i + 1} → {_pick_opts[_picked_labels[i]]['name'][:28]}"
+                    for i in range(len(_picked_labels))
+                )
+                st.caption(_tag_preview)
+            _send_ep = st.radio(
+                "Console workflow",
+                ["First Frame", "First and Last Frames", "All-in-One Reference"],
+                horizontal=True,
+                key="assets_console_entry",
+            )
+            _send_usage = None
+            if _send_ep == "All-in-One Reference":
+                _send_usage = st.selectbox(
+                    "Image usage (All-in-One)",
+                    ["auto", "first_frame", "reference_only", "composite"],
+                    format_func=lambda x: {
+                        "auto": "Auto",
+                        "first_frame": "First frame",
+                        "reference_only": "Reference only",
+                        "composite": "Composite",
+                    }[x],
+                    key="assets_console_image_usage",
+                )
+            _send_disabled = not _picked_labels
+            if _send_ep == "First Frame":
+                if len(_picked_labels) != 1:
+                    st.caption("First Frame: select exactly 1 image.")
+                    _send_disabled = True
+            elif _send_ep == "First and Last Frames":
+                if len(_picked_labels) != 2:
+                    st.caption("First + Last: select exactly 2 images (@Image 1 = first, @Image 2 = last).")
+                    _send_disabled = True
+            elif len(_picked_labels) > 9:
+                st.warning("All-in-One allows at most 9 images; only the first 9 will be sent.")
+            if st.button(
+                "Send to Console",
+                type="primary",
+                use_container_width=True,
+                disabled=_send_disabled,
+                key="assets_send_to_console_btn",
+            ):
+                _ordered = [_pick_opts[lab] for lab in _picked_labels]
+                if _send_ep == "First Frame":
+                    _ordered = _ordered[:1]
+                elif _send_ep == "First and Last Frames":
+                    _ordered = _ordered[:2]
+                else:
+                    _ordered = _ordered[:9]
+                st.session_state["_assets_to_console_pending"] = {
+                    "entry_point": _send_ep,
+                    "asset_ids": [a["id"] for a in _ordered],
+                    "catalog": _img_assets_all,
+                    "image_usage": _send_usage,
+                }
+                # Keep _console_param_snapshot from last Console visit — do NOT
+                # re-save here (Assets page has no Console widgets in session_state).
+                st.session_state["_console_was_away"] = True
+                st.session_state.active_page = "console"
+                st.toast(
+                    f"Opening Console with {', '.join(f'@Image {i + 1}' for i in range(len(_ordered)))}"
+                )
+                st.rerun()
 
     if not filtered:
         st.info("No assets yet. Upload files from desktop, or save from Gallery / Storyboard / Editing.")
@@ -225,7 +318,13 @@ def render_assets_page():
                     badge_color = type_colors.get(ftype, "#9E9E8A")
                     badge_label = type_labels.get(ftype, "FILE")
                     _orig_name = asset.get("original_name") or ""
-                    _at_tag = _console_tag_map.get(_orig_name, "") or _console_tag_map.get(fname, "")
+                    _pick_labels_live = st.session_state.get("assets_console_pick", [])
+                    _asset_label = _asset_picker_label(asset)
+                    _at_tag = ""
+                    if _asset_label in _pick_labels_live:
+                        _at_tag = f"@Image {_pick_labels_live.index(_asset_label) + 1}"
+                    if not _at_tag:
+                        _at_tag = _console_tag_map.get(_orig_name, "") or _console_tag_map.get(fname, "")
                     _at_tag_esc = _html_stdlib.escape(_at_tag) if _at_tag else ""
                     _at_tag_html = (
                         f'<span style="color:#FFEB3B; font-size:0.6rem; font-weight:700; '

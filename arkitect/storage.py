@@ -141,7 +141,38 @@ def save_asset_catalog(catalog):
         pass
 
 
-def add_to_assets(source_path=None, uploaded_file=None, original_name=None, provenance=None):
+def _project_asset_name_prefix(project_name):
+    """Sanitize project name for asset filenames (e.g. My_Film_001.jpg)."""
+    if not project_name or str(project_name).strip() in ("", "All Projects"):
+        return "asset"
+    slug = re.sub(r"[^\w\-]", "_", str(project_name).strip())
+    return slug or "asset"
+
+
+def next_project_image_asset_name(project_id=None, project_name=None, ext=".jpg"):
+    """
+    Next catalog filename for a project image: {ProjectSlug}_001.ext, _002, etc.
+    Counts existing image assets in the same project with matching prefix.
+    """
+    catalog = load_asset_catalog()
+    prefix = _project_asset_name_prefix(project_name)
+    max_n = 0
+    for a in catalog:
+        if a.get("type") != "image":
+            continue
+        if project_id is not None:
+            if a.get("project_id") != project_id:
+                continue
+        stem = os.path.splitext(a.get("name", ""))[0]
+        m = re.match(rf"^{re.escape(prefix)}_(\d+)$", stem, re.I)
+        if m:
+            max_n = max(max_n, int(m.group(1)))
+    ext = ext if ext.startswith(".") else f".{ext}"
+    return f"{prefix}_{max_n + 1:03d}{ext}"
+
+
+def add_to_assets(source_path=None, uploaded_file=None, original_name=None, provenance=None,
+                  asset_name=None):
     """
     Add a file to the asset library.
     source_path: path on disk (for copies from Gallery/Storyboard/Editing)
@@ -152,11 +183,13 @@ def add_to_assets(source_path=None, uploaded_file=None, original_name=None, prov
     catalog = load_asset_catalog()
 
     if uploaded_file:
-        name = uploaded_file.name
+        upload_original = uploaded_file.name
+        name = asset_name or upload_original
         data = uploaded_file.getvalue()
         mime = getattr(uploaded_file, 'type', None) or 'application/octet-stream'
     elif source_path and os.path.exists(source_path):
-        name = original_name or os.path.basename(source_path)
+        upload_original = original_name or os.path.basename(source_path)
+        name = asset_name or upload_original
         with open(source_path, 'rb') as f:
             data = f.read()
         ext = os.path.splitext(name)[1].lower()
@@ -181,9 +214,9 @@ def add_to_assets(source_path=None, uploaded_file=None, original_name=None, prov
     else:
         return None
 
-    # Check for duplicates by original name + size
+    # Check for duplicates by original filename + size
     for existing in catalog:
-        if existing.get("original_name") == name and existing.get("size") == len(data):
+        if existing.get("original_name") == upload_original and existing.get("size") == len(data):
             return existing  # already in library
 
     # Save file to assets/{subdir}/
@@ -206,7 +239,7 @@ def add_to_assets(source_path=None, uploaded_file=None, original_name=None, prov
     entry = {
         "id": asset_id,
         "name": safe_name,
-        "original_name": name,
+        "original_name": upload_original,
         "type": ftype,
         "path": dest,
         "mime": mime,

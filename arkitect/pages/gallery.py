@@ -29,6 +29,8 @@ def _render_gallery_sidebar():
         _all_imgs = list(st.session_state.get("gallery_images") or [])
         if _active_proj:
             _all_imgs = [img for img in _all_imgs if img.get("project_id") == _active_proj]
+        else:
+            _all_imgs = []
         n_sel = len(st.session_state.gallery_selected_imgs)
 
         st.markdown(
@@ -90,6 +92,8 @@ def _render_gallery_sidebar():
         _all_vids = list(st.session_state.get("gallery_videos") or [])
         if _active_proj:
             _all_vids = [v for v in _all_vids if v.get("project_id") == _active_proj]
+        else:
+            _all_vids = []
         vn_sel = len(st.session_state.gallery_selected_vids)
 
         st.markdown(
@@ -171,6 +175,8 @@ def _render_gallery_sidebar():
         _all_imgs_nav = list(st.session_state.get("gallery_images") or [])
         if _active_proj:
             _all_imgs_nav = [img for img in _all_imgs_nav if img.get("project_id") == _active_proj]
+        else:
+            _all_imgs_nav = []
         _total_nav = len(_all_imgs_nav)
         _per_page_nav = 20
         _pages_nav = max(1, (_total_nav + _per_page_nav - 1) // _per_page_nav)
@@ -190,6 +196,8 @@ def _render_gallery_sidebar():
         _all_vids_nav = list(st.session_state.get("gallery_videos") or [])
         if _active_proj:
             _all_vids_nav = [v for v in _all_vids_nav if v.get("project_id") == _active_proj]
+        else:
+            _all_vids_nav = []
         _total_nav = len(_all_vids_nav)
         _per_page_nav = 9
         _pages_nav = max(1, (_total_nav + _per_page_nav - 1) // _per_page_nav)
@@ -285,21 +293,38 @@ def render_gallery_page():
     with _gal_row_r:
         _render_project_name_inline_right()
 
+    gallery_videos = list(st.session_state.get("gallery_videos") or [])
+    gallery_images = list(st.session_state.get("gallery_images") or [])
+    # Filter by active project — only show media for current project
+    _active_pid = st.session_state.get("active_project_id")
+    if _active_pid:
+        gallery_videos = [
+            v for v in gallery_videos
+            if v.get("project_id") == _active_pid
+        ]
+        gallery_images = [
+            i for i in gallery_images
+            if i.get("project_id") == _active_pid
+        ]
+    else:
+        gallery_videos = []
+        gallery_images = []
+
     _gcm, _gcs = st.columns([4, 1], gap="large")
     with _gcs:
         _render_gallery_sidebar()
     with _gcm:
+        if st.session_state.gal_nav == "Gallery":
+            if not gallery_videos and not gallery_images:
+                st.info("No media in this project yet. Generate videos or images in the Console.")
+                st.stop()
+
         if st.session_state.gal_nav == "Gallery" and st.session_state.get("gal_media_tab", "Images") == "Images":
             full_gallery_images = list(st.session_state.gallery_images)
             active_proj = get_active_project_id()
-            images = full_gallery_images
-            if active_proj:
-                images = [img for img in images if img.get("project_id") == active_proj]
+            images = gallery_images
             if not images:
-                if active_proj and full_gallery_images:
-                    st.info("No images in this project.")
-                else:
-                    st.info("No images yet.")
+                st.info("No images in this project yet.")
             else:
                 total_imgs = len(images)
                 img_total_pages = max(1, (total_imgs + GALLERY_PER_PAGE - 1) // GALLERY_PER_PAGE)
@@ -707,16 +732,10 @@ def render_gallery_page():
         elif st.session_state.gal_nav == "Gallery" and st.session_state.get("gal_media_tab", "Images") == "Videos":
             full_gallery_videos = list(st.session_state.gallery_videos)
             active_proj = get_active_project_id()
-            videos = full_gallery_videos
-            if active_proj:
-                videos = [vid for vid in videos if vid.get("project_id") == active_proj]
+            videos = gallery_videos
 
-            # ── Empty state ───────────────────────────────────────────
             if not videos:
-                if active_proj and full_gallery_videos:
-                    st.info("No videos in this project.")
-                else:
-                    st.info("No videos yet.")
+                st.info("No videos in this project yet.")
             else:
                 # ── Pagination ────────────────────────────────────────
                 _VPP  = 9

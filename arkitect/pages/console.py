@@ -1,6 +1,7 @@
 import json
 import os
 import random
+import time
 from datetime import datetime
 
 import streamlit as st
@@ -13,11 +14,14 @@ from arkitect.storage import (
     load_asset_catalog,
     save_gallery_to_disk,
 )
+from arkitect.tone_pills import render_tone_pills_section
 from arkitect.console_state import (
     _CONSOLE_SNAPSHOT_SKIP,
+    _clear_console_param_keys,
     _delete_project_console_settings,
     _save_console_param_snapshot,
     _save_project_console_settings,
+    consume_assets_to_console_pending,
 )
 from arkitect.media_server import _STATIC_SERVING_OK, _STATIC_SERVING_SUPPORTED
 from builder import build_prompt as build_video_prompt, analyze_cinematography, build_image_prompt
@@ -26,6 +30,7 @@ from generator import (
     SEEDREAM_5_0_LITE_MODEL_ID,
     generate_video,
     generate_seedream_image,
+    format_video_generation_failure,
     estimate_cost,
     format_cost_str,
     _estimate_seedance2_usage,
@@ -74,17 +79,7 @@ def render_shot_panel(shot_num, key_prefix="s"):
         data['lighting_direction'] = st.selectbox("Lighting Direction", LIST_LIGHTING_DIRECTION, key=f"{k}_light_dir")
         data['lighting'] = st.selectbox("Lighting Type", LIST_LIGHTING, key=f"{k}_light")
     with tab_tones:
-        data['tone_brightness'] = st.slider("Brightness", 0, 10, key=f"{k}_tb")
-        data['tone_contrast'] = st.slider("Contrast", 0, 10, key=f"{k}_tc")
-        data['tone_saturation'] = st.slider("Saturation", 0, 10, key=f"{k}_ts")
-        data['tone_temperature'] = st.slider("Color Temp.", 0, 10, key=f"{k}_tt")
-        data['tone_bokeh'] = st.slider("Background Bokeh", 0, 10, key=f"{k}_tbo")
-        data['tone_sharpness'] = st.slider("Sharpness", 0, 10, key=f"{k}_tsh")
-        data['tone_vignette'] = st.slider("Vignette", 0, 10, key=f"{k}_tv")
-        data['tone_chromatic'] = st.slider("Chromatic Aberr.", 0, 10, key=f"{k}_tca")
-        data['tone_grain'] = st.slider("Film Grain", 0, 10, key=f"{k}_tg")
-        data['tone_softness'] = st.slider("Softness (Bloom)", 0, 10, key=f"{k}_tso")
-        data['tone_motionblur'] = st.slider("Motion Blur", 0, 10, key=f"{k}_tmb")
+        data.update(render_tone_pills_section(k))
         st.markdown("**Color Grading**")
         default_colors = ["#1E90FF", "#FF4500", "#32CD32"]
         color_maps = []
@@ -229,10 +224,36 @@ def _build_settings_json(model_sel, **kwargs):
     return _clean(settings)
 
 
+def _render_s2_generation_error_box():
+    """Persistent error panel below GENERATE (survives st.rerun)."""
+    err = st.session_state.get("s2_generation_error")
+    if not err:
+        return
+    title = err.get("title", "Video generation failed") if isinstance(err, dict) else str(err)
+    details = err.get("details", []) if isinstance(err, dict) else [str(err)]
+    st.markdown(
+        '<div class="generation-error-box" style="margin-top:12px; padding:12px 14px; '
+        'border:1px solid #c62828; border-radius:8px; background:rgba(198,40,40,0.08);">',
+        unsafe_allow_html=True,
+    )
+    st.markdown(f"**{title}**")
+    for line in details:
+        st.markdown(f"- {line}")
+    warnings = err.get("warnings", []) if isinstance(err, dict) else []
+    for line in warnings:
+        st.markdown(f"- ⚠️ {line}")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 def render_console_page():
     """Render the Console page — model params, preview, generate."""
 
+    # Apply Assets → Console transfer before any widgets (avoids session_state key conflicts)
+    _applied_from_assets, _assets_msg = consume_assets_to_console_pending()
+
     model_sel = st.session_state.get("model_selector", "SEEDANCE 2.0")
+    if _applied_from_assets:
+        model_sel = "SEEDANCE 2.0"
     total_files = num_imgs = num_vids = num_auds = 0
     action_desc = ""
     shots_data = []
@@ -256,18 +277,11 @@ def render_console_page():
     preview_clicked = False
     json_clicked = False
 
-    # Save a fresh snapshot at the top of every Console render.
-    # Catches in-Console state changes (e.g. model flip) so the other
-    # model's params survive when the user flips back.
-    _save_console_param_snapshot()
-    # Also persist to the active project's JSON file (per-project memory).
-    _save_project_console_settings()
-
     if st.session_state.get("_console_reset_pending"):
         del st.session_state["_console_reset_pending"]
-        # Wipe active project's persistent settings file
         _delete_project_console_settings(st.session_state.get("active_project_id"))
-        _reset_keys = [
+        _clear_console_param_keys()
+        for k in (
             "action_desc_s2", "sd_prompt_input",
             "s2_opt_prompt", "s2_raw_prompt",
             "sd_opt_prompt", "sd_raw_prompt",
@@ -277,12 +291,6 @@ def render_console_page():
             "_do_preview_s2", "_do_preview_sd",
             "_do_generate_s2", "_do_generate_sd",
             "canvas_prompt_editor",
-            "video_resolution", "video_aspect_ratio", "common_duration", "gen_mode_selector", "s2_gen_mode",
-            "s2_workflow",
-            "common_temperature",
-            "common_num_variations",
-            "enable_audio",
-            "sd_optimize", "sd_resolution", "sd_ar_select",
             "_cached_s2_images", "_cached_s2_videos", "_cached_s2_audio",
             "_cached_sd_refs",
             "_cached_s2_first_frame", "_cached_s2_last_frame", "_cached_s2_first_only",
@@ -296,13 +304,12 @@ def render_console_page():
             "_persist_s2_assets_last_frame",
             "_persist_s2_assets_first_only",
             "_persist_sd_assets_refs",
-            "_console_was_away",
-        ]
-        for k in _reset_keys:
+            "_console_was_away", "_console_just_restored",
+            "s2_generation_error",
+        ):
             st.session_state.pop(k, None)
         for i in range(10):
             st.session_state.pop(f"seed_input_{i}", None)
-        # Clear in-memory snapshot too, so restore doesn't repopulate
         st.session_state["_console_param_snapshot"] = {}
         st.rerun()
 
@@ -310,10 +317,23 @@ def render_console_page():
 
     with left_col:
         with st.expander("MODELS", expanded=False):
-            st.radio("Model", ["SEEDANCE 2.0", "SEEDREAM 5.0"], key="model_selector", label_visibility="collapsed", horizontal=False)
+            # Handle programmatic switch from Seedream → Seedance
+            if st.session_state.pop("_switch_to_seedance", False):
+                _model_default_idx = 0  # SEEDANCE 2.0
+            else:
+                _model_options = ["SEEDANCE 2.0", "SEEDREAM 5.0"]
+                _current = st.session_state.get("model_selector", "SEEDANCE 2.0")
+                _model_default_idx = _model_options.index(_current) if _current in _model_options else 0
+            st.radio("Model", ["SEEDANCE 2.0", "SEEDREAM 5.0"],
+                     index=_model_default_idx,
+                     key="model_selector",
+                     label_visibility="collapsed",
+                     horizontal=False)
 
         with st.expander("WORKFLOW", expanded=False):
             if model_sel == "SEEDANCE 2.0":
+                if _applied_from_assets and _assets_msg:
+                    st.success(_assets_msg)
                 s2_entry_point = st.radio("Entry Point", ["First Frame", "First and Last Frames", "All-in-One Reference"], key="s2_entry_point")
                 is_first_last = s2_entry_point == "First and Last Frames"
                 is_first_frame = s2_entry_point == "First Frame"
@@ -672,9 +692,26 @@ def render_console_page():
                             format_func=lambda x: {"auto": "Auto", "first_frame": "First frame", "reference_only": "Reference only", "composite": "Composite"}[x],
                             key="s2_image_usage",
                         )
+                    elif num_imgs > 0:
+                        image_usage = st.session_state.get("s2_image_usage", image_usage)
+
+                    if (num_vids or num_auds) and image_usage == "first_frame":
+                        st.error(
+                            "Reference videos/audio cannot be combined with Image usage “First frame”. "
+                            "Remove media, choose Reference only, or use Entry Point “First Frame”."
+                        )
+                    elif (num_vids or num_auds) and num_imgs == 1 and image_usage == "auto":
+                        st.info(
+                            "One image with reference video/audio: the image is sent as a reference "
+                            "(not locked as first frame), per Seedance API rules."
+                        )
 
                 # Safety net: all-in-one only — if uploads are empty on rerun, restore from session cache
                 if not is_first_last and not is_first_frame:
+                    _seedream_ref = st.session_state.pop("_seedream_to_seedance_ref", None)
+                    if _seedream_ref is not None:
+                        s2_images = [_seedream_ref]
+                        st.session_state["_cached_s2_images"] = [_seedream_ref]
                     if not s2_videos and st.session_state.get("_cached_s2_videos"):
                         s2_videos = list(st.session_state.get("_cached_s2_videos"))
                     if not s2_images and st.session_state.get("_cached_s2_images"):
@@ -809,12 +846,14 @@ def render_console_page():
 
         if st.button("PROJECTS", key="top_projects_btn", use_container_width=True):
             _save_console_param_snapshot()
+            _save_project_console_settings()
             st.session_state["_console_was_away"] = True
             st.session_state.active_page = "projects"
             st.rerun()
 
         if st.button("ASSETS", key="top_assets_btn", use_container_width=True):
             _save_console_param_snapshot()
+            _save_project_console_settings()
             st.session_state["_console_was_away"] = True
             st.session_state.active_page = "assets"
             st.rerun()
@@ -909,13 +948,89 @@ def render_console_page():
             elif model_sel == "SEEDREAM 5.0":
                 data = st.session_state.sd_last_result
                 r = data.get("result", {})
+                _sd_img_path = None
+                _sd_img_url = None
                 if data.get("batch") and r.get("images"):
                     for im in r["images"]:
                         if not im.get("error"):
                             img_src = im.get("image_path") if im.get("image_path") and os.path.exists(im.get("image_path", "")) else im.get("image_url")
-                            if img_src: st.image(img_src, width="stretch")
+                            if img_src:
+                                st.image(img_src, width="stretch")
+                            if _sd_img_path is None:
+                                _sd_img_path = im.get("image_path")
+                                _sd_img_url = im.get("image_url")
                 elif r.get("image_url"):
                     st.image(r["image_url"], width="stretch")
+                    _sd_img_path = r.get("image_path")
+                    _sd_img_url = r.get("image_url")
+
+                if st.button(
+                    "ANIMATE WITH SEEDANCE",
+                    key="animate_with_seedance_btn",
+                    use_container_width=True,
+                    type="primary"
+                ):
+                    try:
+                        # Determine source path — prefer local file over URL
+                        _src_path = None
+                        _src_url = None
+                        if _sd_img_path and os.path.exists(_sd_img_path):
+                            _src_path = _sd_img_path
+                        elif _sd_img_url:
+                            _src_url = _sd_img_url
+
+                        # Save to project Assets
+                        _active_pid = st.session_state.get("active_project_id")
+                        _asset_result = add_to_assets(
+                            source_path=_src_path,
+                            original_name=f"seedream_character_{int(time.time())}.jpg",
+                            provenance={
+                                "source": "seedream_5_0",
+                                "prompt": st.session_state.get("sd_opt_prompt", "")[:200],
+                                "style": st.session_state.get("sd_style_select", ""),
+                                "project_id": _active_pid,
+                            }
+                        )
+
+                        # Build CachedUploadedFile from the saved asset path
+                        _asset_path = _asset_result.get("path") if isinstance(_asset_result, dict) else _src_path
+                        if _asset_path and os.path.exists(_asset_path):
+                            with open(_asset_path, "rb") as _f:
+                                _img_bytes = _f.read()
+                        elif _src_url:
+                            import requests as _req
+                            _r = _req.get(_src_url, timeout=30)
+                            _r.raise_for_status()
+                            _img_bytes = _r.content
+                        else:
+                            raise ValueError("No image source available")
+
+                        _cached_char = CachedUploadedFile(
+                            name=os.path.basename(_asset_path or f"seedream_{int(time.time())}.jpg"),
+                            data=_img_bytes,
+                            mime_type="image/jpeg"
+                        )
+
+                        # Switch to SEEDANCE 2.0 (via flag — avoid mutating model_selector after widget exists)
+                        st.session_state["_switch_to_seedance"] = True
+
+                        # Pre-load as reference @Image 1
+                        st.session_state["_seedream_to_seedance_ref"] = _cached_char
+                        st.session_state["s2_entry_point"] = "All-in-One Reference"
+                        st.session_state["s2_image_usage"] = "reference_only"
+
+                        # Clear previous Seedance state
+                        st.session_state.pop("s2_last_result", None)
+                        st.session_state.pop("s2_opt_prompt", None)
+                        st.session_state.pop("s2_raw_prompt", None)
+
+                        st.success(f"Image saved to Assets and loaded as @Image 1 in Seedance 2.0")
+                        st.rerun()
+
+                    except Exception as _ae:
+                        st.error(f"Failed to transfer image to Seedance: {_ae}")
+                        import traceback
+                        traceback.print_exc()
             # Buttons: PREVIEW + GENERATE
             st.markdown('<div class="generate-btn-wrap">', unsafe_allow_html=True)
             if model_sel == "SEEDANCE 2.0":
@@ -1007,6 +1122,7 @@ def render_console_page():
             else:
                 st.session_state["_do_preview_sd"] = True
         if generate_clicked:
+            st.session_state.pop("s2_generation_error", None)
             if not has_prompt and not has_result:
                 if st.session_state.get("json_preview"):
                     st.session_state["_preview_feedback"] = "⚠️ Press PREVIEW PROMPT to build an optimized prompt from your current settings."
@@ -1016,6 +1132,8 @@ def render_console_page():
                 st.session_state["_do_generate_s2"] = True
             else:
                 st.session_state["_do_generate_sd"] = True
+
+        _render_s2_generation_error_box()
 
     with right_col:
         with st.expander("TECHNICAL", expanded=False):
@@ -1063,18 +1181,26 @@ def render_console_page():
         _save_console_param_snapshot()
 
         if st.button("GALLERY", key="top_gallery_btn", use_container_width=True):
+            _save_console_param_snapshot()
+            _save_project_console_settings()
             st.session_state["_console_was_away"] = True
             st.session_state.active_page = "gallery"
             st.rerun()
         if st.button("STORYBOARD", key="top_sb_images_btn", use_container_width=True):
+            _save_console_param_snapshot()
+            _save_project_console_settings()
             st.session_state["_console_was_away"] = True
             st.session_state.active_page = "storyboard"
             st.rerun()
         if st.button("REFERENCES", key="top_references_quick_btn", use_container_width=True):
+            _save_console_param_snapshot()
+            _save_project_console_settings()
             st.session_state["_console_was_away"] = True
             st.session_state.active_page = "references"
             st.rerun()
         if st.button("EDITING", key="top_sb_video_btn", use_container_width=True):
+            _save_console_param_snapshot()
+            _save_project_console_settings()
             st.session_state["_console_was_away"] = True
             st.session_state.active_page = "editing"
             st.rerun()
@@ -1180,6 +1306,8 @@ def render_console_page():
 
     # S2.0 preview
     if model_sel == "SEEDANCE 2.0" and st.session_state.get("_do_preview_s2"):
+        # Clear previous result so canvas shows new prompt
+        st.session_state.pop("s2_last_result", None)
         if not action_desc or not str(action_desc).strip():
             st.error("Write a scene description before pressing PREVIEW.")
             st.session_state["_do_preview_s2"] = False
@@ -1222,6 +1350,7 @@ def render_console_page():
 
     # S2.0 generate
     if model_sel == "SEEDANCE 2.0" and st.session_state.get("_do_generate_s2"):
+        st.session_state["_do_generate_s2"] = False  # Reset immediately to prevent double-generation
         if not GENERATION_ENABLED:
             st.warning("Generation temporarily disabled (demo mode). Preview Prompt is active.")
             st.session_state["_do_generate_s2"] = False
@@ -1256,6 +1385,7 @@ def render_console_page():
                     traceback.print_exc()
                     result = {"error": str(e)}
                 if isinstance(result, dict) and result.get("video"):
+                    st.session_state.pop("s2_generation_error", None)
                     st.session_state.s2_last_result = result
                     _s2_est_cost = estimate_cost(
                         SEEDANCE_2_0_MODEL_ID,
@@ -1302,12 +1432,14 @@ def render_console_page():
                     save_gallery_to_disk(st.session_state.gallery_videos, st.session_state.gallery_images)
                 else:
                     st.session_state.s2_last_result = None
-                    st.error(f"Production Failed: {result}")
+                    st.session_state["s2_generation_error"] = format_video_generation_failure(result)
             st.session_state["_do_generate_s2"] = False
             st.rerun()
 
     # Seedream preview
     if model_sel == "SEEDREAM 5.0" and st.session_state.get("_do_preview_sd"):
+        # Clear previous result so canvas shows new prompt
+        st.session_state.pop("sd_last_result", None)
         if not sd_prompt or not str(sd_prompt).strip():
             st.error("Write a scene description before pressing PREVIEW.")
             st.session_state["_do_preview_sd"] = False
@@ -1399,3 +1531,8 @@ def render_console_page():
                     st.error(f"Dream Failed: {result}")
             st.session_state["_do_generate_sd"] = False
             st.rerun()
+
+    # Persist params after widgets render (navigation restore reads this snapshot).
+    if not st.session_state.pop("_console_just_restored", False):
+        _save_console_param_snapshot()
+        _save_project_console_settings()

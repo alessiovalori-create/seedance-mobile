@@ -39,6 +39,484 @@ except ImportError:
 
 # Max image file size for Seedance 2.0 API (official limit: 30MB, safety margin for base64 overhead)
 MAX_IMAGE_BYTES = 20 * 1024 * 1024  # 20MB
+SEEDANCE_IMAGE_API_MAX_BYTES = 30 * 1024 * 1024
+SEEDANCE_VIDEO_MAX_BYTES = 50 * 1024 * 1024
+SEEDANCE_AUDIO_MAX_BYTES = 25 * 1024 * 1024
+# r2v: reference clip(s) must be <= 15.2s (API); trim slightly under for safety
+SEEDANCE_REF_VIDEO_MAX_SECONDS = 15.2
+SEEDANCE_REF_VIDEO_TRIM_TO_SECONDS = 15.0
+SEEDANCE_IMAGE_MIN_PX = 300  # ByteDance Seedance 2.0: 300–6000 px per side
+SEEDANCE_REF_VIDEO_MIN_SECONDS = 2.0
+SEEDANCE_IMAGE_RECOMMENDED_MIN_PX = 512
+SEEDANCE_IMAGE_MAX_PX = 4096
+SEEDANCE_ALLOWED_IMAGE_MIMES = frozenset({
+    "image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif",
+})
+
+
+def _human_file_size(num_bytes):
+    if num_bytes >= 1024 * 1024:
+        return f"{num_bytes / (1024 * 1024):.1f} MB"
+    return f"{num_bytes / 1024:.0f} KB"
+
+
+def _read_uploaded_bytes(file_obj):
+    """Return (bytes, display_name, mime) or (None, name, None) on failure."""
+    name = getattr(file_obj, "name", None) or "upload"
+    try:
+        if hasattr(file_obj, "getvalue"):
+            data = file_obj.getvalue()
+        elif getattr(file_obj, "path", None) and os.path.isfile(file_obj.path):
+            with open(file_obj.path, "rb") as f:
+                data = f.read()
+        else:
+            return None, name, None
+        mime = (getattr(file_obj, "type", None) or "").split(";")[0].strip().lower()
+        if not mime:
+            ext = os.path.splitext(name)[1].lower()
+            mime = {
+                ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+                ".webp": "image/webp", ".gif": "image/gif",
+                ".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm",
+                ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4",
+            }.get(ext, "")
+        return data, name, mime
+    except Exception as e:
+        return None, name, str(e)
+
+
+def _image_pixel_size(data):
+    if not PIL_AVAILABLE or not data:
+        return None, None
+    try:
+        img = PILImage.open(_io.BytesIO(data))
+        return img.width, img.height
+    except Exception:
+        return None, None
+
+
+def _probe_video_duration_from_path(path):
+    """Return duration in seconds, or None if unknown."""
+    try:
+        import subprocess
+        r = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1", path,
+            ],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode == 0 and (r.stdout or "").strip():
+            return float(r.stdout.strip())
+    except Exception:
+        pass
+    if CV2_AVAILABLE:
+        try:
+            cap = cv2.VideoCapture(path)
+            if cap.isOpened():
+                fps = float(cap.get(cv2.CAP_PROP_FPS) or 0)
+                frames = float(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+                cap.release()
+                if fps > 0 and frames > 0:
+                    return frames / fps
+        except Exception:
+            pass
+    return None
+
+
+def _video_duration_seconds_from_bytes(vid_bytes, name="video.mp4"):
+    import tempfile
+    suffix = os.path.splitext(name)[1] or ".mp4"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tf:
+        tf.write(vid_bytes)
+        path = tf.name
+    try:
+        return _probe_video_duration_from_path(path)
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def _ffprobe_video_valid(path):
+    """True if ffprobe can read the file without errors."""
+    try:
+        import subprocess
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_format", "-show_streams", path],
+            capture_output=True, timeout=30,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _safe_media_filename(name, default="reference.mp4"):
+    base = os.path.basename(name or default)
+    stem, ext = os.path.splitext(base)
+    ext = ext.lower() if ext.lower() in (".mp4", ".mov", ".webm", ".m4a", ".mp3", ".wav") else ".mp4"
+    safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem or "reference").strip("._") or "reference"
+    return f"{safe_stem[:80]}{ext}"
+
+
+def _normalize_mime_for_data_url(mime):
+    m = (mime or "image/jpeg").split(";")[0].strip().lower()
+    if m in ("image/jpg", "image/jpe"):
+        return "image/jpeg"
+    if m in SEEDANCE_ALLOWED_IMAGE_MIMES:
+        return m
+    return "image/jpeg"
+
+
+def _normalize_reference_video_bytes(vid_bytes, name, max_seconds=SEEDANCE_REF_VIDEO_TRIM_TO_SECONDS):
+    """
+    Re-encode to H.264 + AAC MP4 (yuv420p, faststart). ByteDance requires valid mp4/mov;
+    stream-copy trims often produce truncated files that fail as 'Invalid media input'.
+    Returns (bytes, name, duration) or (None, name, None).
+    """
+    import tempfile
+    import subprocess
+    suffix = os.path.splitext(name)[1] or ".mp4"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as src_f:
+        src_f.write(vid_bytes)
+        src_path = src_f.name
+    out_path = src_path + ".norm.mp4"
+    out_name = _safe_media_filename(name, "reference.mp4")
+    try:
+        cmd = [
+            "ffmpeg", "-y", "-i", src_path,
+            "-t", str(max_seconds),
+            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+            "-c:v", "libx264", "-profile:v", "main", "-pix_fmt", "yuv420p",
+            "-preset", "fast", "-crf", "23",
+            "-c:a", "aac", "-ac", "2", "-ar", "48000", "-b:a", "128k",
+            "-movflags", "+faststart",
+            out_path,
+        ]
+        r = subprocess.run(cmd, capture_output=True, timeout=180)
+        if r.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1024:
+            return None, name, None
+        if not _ffprobe_video_valid(out_path):
+            return None, name, None
+        dur = _probe_video_duration_from_path(out_path)
+        with open(out_path, "rb") as f:
+            return f.read(), out_name, dur
+    finally:
+        for p in (src_path, out_path):
+            try:
+                if os.path.exists(p):
+                    os.unlink(p)
+            except OSError:
+                pass
+
+
+def _verify_fetchable_media_url(url, expect_video=True, auth_headers=None):
+    """Check URL returns real media (not HTML error page). Optional Bearer for ARK file URLs."""
+    if not url or not str(url).startswith(("http://", "https://")):
+        return False
+    headers = dict(auth_headers or {})
+    try:
+        sess = _session_for_ark()
+        r = sess.head(url, headers=headers, timeout=30, allow_redirects=True, verify=_ssl_verify)
+        if r.status_code >= 400:
+            r = sess.get(url, headers=headers, timeout=60, stream=True, verify=_ssl_verify)
+        if r.status_code >= 400:
+            return False
+        ct = (r.headers.get("content-type") or "").lower()
+        if "text/html" in ct or "application/json" in ct:
+            return False
+        if expect_video:
+            chunk = b""
+            for part in r.iter_content(8192):
+                chunk += part
+                if len(chunk) >= 12:
+                    break
+            if len(chunk) >= 8 and chunk[4:8] != b"ftyp":
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def _upload_reference_video_url(vid_bytes, vid_name, session):
+    """
+    Public URL for ARK to download reference video.
+    Prefer ARK Files API (same tenant); fallback to tmpfiles.org with /dl/ URL + verify.
+    """
+    safe_name = _safe_media_filename(vid_name, "reference.mp4")
+    auth = {"Authorization": f"Bearer {API_KEY}"}
+
+    try:
+        mock = type("F", (), {
+            "name": safe_name,
+            "getvalue": lambda: vid_bytes,
+            "type": "video/mp4",
+        })()
+        out = upload_file_to_byteplus(mock)
+        if out:
+            fid, url = out if isinstance(out, tuple) else (out, None)
+            if not url and fid:
+                url = f"{FILE_UPLOAD_URL}/{fid}"
+            if url and _verify_fetchable_media_url(url, expect_video=True, auth_headers=auth):
+                print(f"[DEBUG-VIDEO] ARK Files URL ok: {url[:80]}")
+                return url
+            print(f"[DEBUG-VIDEO] ARK Files URL not fetchable as video, trying tmpfiles")
+    except Exception as e:
+        print(f"[DEBUG-VIDEO] ARK Files upload failed: {e}")
+
+    try:
+        resp = session.post(
+            "https://tmpfiles.org/api/v1/upload",
+            files={"file": (safe_name, vid_bytes, "video/mp4")},
+            timeout=120,
+            verify=_ssl_verify,
+        )
+        if resp.status_code != 200:
+            print(f"[DEBUG-VIDEO] tmpfiles.org failed: {resp.status_code} {resp.text[:120]}")
+            return None
+        raw_url = (resp.json().get("data") or {}).get("url", "")
+        if not raw_url:
+            return None
+        dl_url = raw_url.replace("https://tmpfiles.org/", "https://tmpfiles.org/dl/")
+        for candidate in (dl_url, raw_url):
+            if _verify_fetchable_media_url(candidate, expect_video=True):
+                print(f"[DEBUG-VIDEO] tmpfiles URL ok: {candidate}")
+                return candidate
+        print(f"[DEBUG-VIDEO] tmpfiles URL failed media verify")
+    except Exception as te:
+        print(f"[DEBUG-VIDEO] tmpfiles.org error: {te}")
+    return None
+
+
+def _has_reference_media_inputs(videos=None, audios=None):
+    return bool((videos or [])[:3] or (audios or [])[:3])
+
+
+def validate_seedance_video_inputs(images=None, videos=None, audios=None, image_usage="auto"):
+    """
+    Pre-flight checks before calling the Seedance 2.0 video API.
+    Returns {"ok": bool, "errors": [str], "warnings": [str]}.
+    """
+    errors = []
+    warnings = []
+    is_first_last = image_usage == "first_last_frame"
+    image_files = (images or [])[:2] if is_first_last else (images or [])[:9]
+    video_files = (videos or [])[:3]
+    audio_files = (audios or [])[:3]
+    has_ref_media = _has_reference_media_inputs(videos, audios)
+
+    if has_ref_media and is_first_last:
+        errors.append(
+            "First + Last Frame mode cannot be combined with reference videos or audio. "
+            "Remove reference media or switch Entry Point to All-in-One Reference."
+        )
+    elif has_ref_media and image_usage == "first_frame":
+        errors.append(
+            "Image usage “First frame” cannot be combined with reference videos or audio. "
+            "Remove reference media, set Image usage to Reference only, or use Entry Point “First Frame”."
+        )
+    elif has_ref_media and image_usage == "auto" and len(images or []) == 1:
+        warnings.append(
+            "With one image plus reference video/audio, the image is sent as reference only "
+            "(not as first frame) — required by the Seedance API."
+        )
+
+    if is_first_last and len(images or []) > 2:
+        errors.append(
+            f"First + Last Frame mode accepts exactly 2 images; you attached {len(images)}. "
+            "Remove extras or change Image Usage."
+        )
+    elif len(images or []) > 9:
+        errors.append(f"Too many images ({len(images)}). Seedance 2.0 allows at most 9 reference images.")
+
+    total_files = len(image_files) + len(video_files) + len(audio_files)
+    if total_files > 12:
+        errors.append(
+            f"Too many input files ({total_files}). Maximum is 12 combined images, videos, and audio."
+        )
+
+    for idx, file_obj in enumerate(image_files, start=1):
+        data, name, mime_or_err = _read_uploaded_bytes(file_obj)
+        label = f"Image {idx} ({name})"
+        if data is None:
+            errors.append(f"{label}: could not read file — {mime_or_err or 'unknown error'}.")
+            continue
+        mime = mime_or_err if isinstance(mime_or_err, str) else ""
+        if mime and mime not in SEEDANCE_ALLOWED_IMAGE_MIMES:
+            errors.append(
+                f"{label}: unsupported format ({mime or 'unknown'}). "
+                "Use JPEG, PNG, WebP, or GIF."
+            )
+        size = len(data)
+        if size > SEEDANCE_IMAGE_API_MAX_BYTES:
+            errors.append(
+                f"{label}: file is too large ({_human_file_size(size)}). "
+                f"Maximum is {_human_file_size(SEEDANCE_IMAGE_API_MAX_BYTES)} per image."
+            )
+        elif size > MAX_IMAGE_BYTES:
+            warnings.append(
+                f"{label}: {_human_file_size(size)} — will be compressed before upload "
+                f"(target under {_human_file_size(MAX_IMAGE_BYTES)})."
+            )
+        w, h = _image_pixel_size(data)
+        if w is None or h is None:
+            errors.append(f"{label}: invalid or corrupted image file.")
+            continue
+        if w < SEEDANCE_IMAGE_MIN_PX or h < SEEDANCE_IMAGE_MIN_PX:
+            errors.append(
+                f"{label}: resolution {w}×{h} is too small. "
+                f"Minimum is {SEEDANCE_IMAGE_MIN_PX}px per side."
+            )
+        elif w > SEEDANCE_IMAGE_MAX_PX or h > SEEDANCE_IMAGE_MAX_PX:
+            errors.append(
+                f"{label}: resolution {w}×{h} exceeds {SEEDANCE_IMAGE_MAX_PX}px per side. "
+                "Resize the image before uploading."
+            )
+        elif w < SEEDANCE_IMAGE_RECOMMENDED_MIN_PX or h < SEEDANCE_IMAGE_RECOMMENDED_MIN_PX:
+            warnings.append(
+                f"{label}: {w}×{h} is below recommended {SEEDANCE_IMAGE_RECOMMENDED_MIN_PX}px — "
+                "motion quality may be soft; use 1024×1024 or larger when possible."
+            )
+
+    total_ref_video_seconds = 0.0
+    for idx, file_obj in enumerate(video_files, start=1):
+        data, name, mime_or_err = _read_uploaded_bytes(file_obj)
+        label = f"Video {idx} ({name})"
+        if data is None:
+            errors.append(f"{label}: could not read file — {mime_or_err or 'unknown error'}.")
+            continue
+        if len(data) > SEEDANCE_VIDEO_MAX_BYTES:
+            errors.append(
+                f"{label}: file is too large ({_human_file_size(len(data))}). "
+                f"Try under {_human_file_size(SEEDANCE_VIDEO_MAX_BYTES)}."
+            )
+        dur = _video_duration_seconds_from_bytes(data, name)
+        if dur is not None:
+            total_ref_video_seconds += dur
+            if dur < SEEDANCE_REF_VIDEO_MIN_SECONDS:
+                errors.append(
+                    f"{label}: {dur:.1f}s is too short (minimum {SEEDANCE_REF_VIDEO_MIN_SECONDS}s per clip)."
+                )
+            elif dur > SEEDANCE_REF_VIDEO_MAX_SECONDS:
+                warnings.append(
+                    f"{label}: {dur:.1f}s — will be re-encoded and trimmed to ≤{SEEDANCE_REF_VIDEO_TRIM_TO_SECONDS}s."
+                )
+        else:
+            warnings.append(
+                f"{label}: could not read duration; will re-encode with ffmpeg before upload."
+            )
+
+    if total_ref_video_seconds > SEEDANCE_REF_VIDEO_MAX_SECONDS:
+        errors.append(
+            f"Combined reference video duration ({total_ref_video_seconds:.1f}s) exceeds "
+            f"{SEEDANCE_REF_VIDEO_MAX_SECONDS}s total. Use fewer/shorter clips."
+        )
+
+    for idx, file_obj in enumerate(audio_files, start=1):
+        data, name, mime_or_err = _read_uploaded_bytes(file_obj)
+        label = f"Audio {idx} ({name})"
+        if data is None:
+            errors.append(f"{label}: could not read file — {mime_or_err or 'unknown error'}.")
+            continue
+        if len(data) > SEEDANCE_AUDIO_MAX_BYTES:
+            errors.append(
+                f"{label}: file is too large ({_human_file_size(len(data))}). "
+                f"Try under {_human_file_size(SEEDANCE_AUDIO_MAX_BYTES)}."
+            )
+
+    return {"ok": not errors, "errors": errors, "warnings": warnings}
+
+
+def format_video_generation_failure(result):
+    """
+    Normalize generate_video error returns into {title, details} for the UI.
+    """
+    if result is None:
+        return {"title": "Video generation failed", "details": ["No response from the API."]}
+
+    if isinstance(result, dict):
+        if result.get("video"):
+            return None
+        details = list(result.get("details") or [])
+        primary = result.get("error") or result.get("message")
+        if primary:
+            details = [str(primary)] + [d for d in details if d != primary]
+        if not details:
+            details = ["Unknown error."]
+        out = {"title": "Video generation failed", "details": _enrich_api_error_details(details)}
+        if result.get("warnings"):
+            out["warnings"] = list(result["warnings"])
+        return out
+
+    if isinstance(result, str):
+        if result == "API_KEY_ERROR":
+            return {
+                "title": "Video generation failed",
+                "details": ["ARK_API_KEY is missing. Set it in your environment and restart the app."],
+            }
+        return {"title": "Video generation failed", "details": _enrich_api_error_details([result])}
+
+    return {"title": "Video generation failed", "details": [str(result)]}
+
+
+def _enrich_api_error_details(lines):
+    """Add actionable hints when API messages mention size, format, or dimensions."""
+    out = []
+    seen = set()
+    for line in lines:
+        s = str(line).strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+        low = s.lower()
+        if any(k in low for k in ("too large", "file size", "exceed", "payload", "30mb", "30 mb", "size limit")):
+            out.append(
+                "Hint: compress or resize reference images (max 30 MB each, recommended 1024×1024 or larger)."
+            )
+        elif any(k in low for k in ("dimension", "resolution", "width", "height", "pixel")):
+            out.append(
+                "Hint: use images between 512×512 and 4096×4096 px; avoid extremely small or huge files."
+            )
+        elif any(
+            k in low
+            for k in (
+                "invalid media", "corrupted", "truncated", "container format",
+                "servicerbadrequest", "reference media",
+            )
+        ):
+            out.append(
+                "Hint: reference video must be MP4/MOV, 2–15s total, H.264 — re-export or let Arkitect "
+                "normalize with ffmpeg. Images: JPEG/PNG/WebP, 300–6000px. For Video Editing use "
+                "All-in-One + reference_video + reference_image (not first_frame)."
+            )
+        elif any(k in low for k in ("format", "mime", "unsupported", "invalid image", "corrupt")):
+            out.append(
+                "Hint: images JPEG/PNG/WebP (300–6000px); videos MP4 H.264, 2–15s total, under 50MB."
+            )
+        elif "first_frame" in low or "last_frame" in low:
+            out.append("Hint: First + Last Frame mode requires exactly two images.")
+        elif "cannot be mixed" in low or "reference media" in low:
+            out.append(
+                "Hint: Use Entry Point “First Frame” or “First and Last Frames” for frame-based "
+                "generation only, or “All-in-One Reference” for @Video/@Audio — do not combine both."
+            )
+        elif "15.2" in s or ("total duration" in low and "video" in low):
+            out.append(
+                f"Hint: reference @Video clips must be ≤ {SEEDANCE_REF_VIDEO_MAX_SECONDS}s each "
+                f"(trim in an editor, or let Arkitect auto-trim if ffmpeg is installed)."
+            )
+    # dedupe hints
+    deduped = []
+    hint_seen = set()
+    for item in out:
+        if item.startswith("Hint:"):
+            if item in hint_seen:
+                continue
+            hint_seen.add(item)
+        deduped.append(item)
+    return deduped
 
 
 def _auto_resize_image(file_obj, max_bytes=MAX_IMAGE_BYTES):
@@ -385,7 +863,20 @@ def generate_video(prompt_text, scene_description, images=[], videos=[], audios=
                    seed="-1", resolution="1080p", aspect_ratio="16:9", duration=8, 
                    generate_audio=False, audio_details={}, is_draft=False, is_offline=False, 
                    model_id=None, shots_data=None, camera_fixed=None, **kwargs):
-    if not API_KEY: return "API_KEY_ERROR"
+    if not API_KEY:
+        return {"error": "API_KEY_ERROR", "details": ["ARK_API_KEY is missing."]}
+
+    image_usage = kwargs.get("image_usage", "auto")
+    preflight = validate_seedance_video_inputs(
+        images=images, videos=videos, audios=audios, image_usage=image_usage,
+    )
+    if not preflight["ok"]:
+        return {
+            "error": "Reference files failed validation",
+            "details": preflight["errors"],
+            "warnings": preflight.get("warnings") or [],
+        }
+
     headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
     
     # Prompt must be narrative-only; strip any legacy --param flags
@@ -394,35 +885,155 @@ def generate_video(prompt_text, scene_description, images=[], videos=[], audios=
     
     model = model_id or SEEDANCE_2_MODEL_ID
 
-    is_first_last_mode = kwargs.get("image_usage") == "first_last_frame"
+    is_first_last_mode = image_usage == "first_last_frame"
+    has_ref_media = _has_reference_media_inputs(videos, audios)
     if is_first_last_mode:
         # First+Last frame: exactly 2 images, regardless of model or resolution
         image_files = (images or [])[:2]
     else:
         image_files = (images or [])[:9]
 
-    # Images: use inline base64 (Seedance 2.0)
+    # Images: inline base64 data URLs (ByteDance: jpeg/png/webp, 300–6000px)
+    image_process_errors = []
+    image_content_items = []
     for i, file in enumerate(image_files):
+        name = getattr(file, "name", None) or f"image_{i + 1}"
         try:
             raw_bytes, mime, was_resized = _auto_resize_image(file)
+            mime = _normalize_mime_for_data_url(mime)
+            if len(raw_bytes) > SEEDANCE_IMAGE_API_MAX_BYTES:
+                image_process_errors.append(
+                    f"Image {i + 1} ({name}): still too large ({_human_file_size(len(raw_bytes))}) "
+                    f"after compression. Maximum is {_human_file_size(SEEDANCE_IMAGE_API_MAX_BYTES)}."
+                )
+                continue
             b64 = base64.b64encode(raw_bytes).decode("utf-8")
             item = {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
-            if is_first_last_mode:
+            if is_first_last_mode and not has_ref_media:
                 item["role"] = "first_frame" if i == 0 else "last_frame"
-            elif i == 0 and kwargs.get("image_usage") in ("first_frame", "auto") and len(image_files) == 1:
+            elif (
+                not has_ref_media
+                and i == 0
+                and image_usage in ("first_frame", "auto")
+                and len(image_files) == 1
+            ):
                 item["role"] = "first_frame"
             else:
                 item["role"] = "reference_image"
-            content_list.append(item)
-        except Exception:
-            pass
-    # Videos/Audio: Seedance 2.0 multimodal inputs
-    for file in (videos or [])[:3]:
-        out = upload_file_to_byteplus(file)
-        if out:
-            fid, url = out if isinstance(out, tuple) else (out, f"{FILE_UPLOAD_URL}/{out}")
-            if url:
-                content_list.append({"type": "video_url", "video_url": {"url": url}, "role": "reference_video"})
+            image_content_items.append(item)
+        except Exception as e:
+            image_process_errors.append(f"Image {i + 1} ({name}): {e}")
+    if image_process_errors and not image_content_items:
+        return {
+            "error": "Could not prepare reference images",
+            "details": image_process_errors,
+        }
+
+    # Videos: normalize to H.264 MP4, then public URL (ARK Files or tmpfiles)
+    _session = _session_for_ark()
+    video_content_items = []
+    _vid_files = list((videos or [])[:3])
+    _per_vid_max = (
+        SEEDANCE_REF_VIDEO_TRIM_TO_SECONDS / len(_vid_files)
+        if len(_vid_files) > 1
+        else SEEDANCE_REF_VIDEO_TRIM_TO_SECONDS
+    )
+    for file in _vid_files:
+        _vid_url = None
+        _vid_name = getattr(file, "name", "video.mp4")
+        _vid_bytes = None
+
+        # Read bytes
+        try:
+            if hasattr(file, "getvalue"):
+                _vid_bytes = file.getvalue()
+            elif hasattr(file, "path") and os.path.exists(file.path):
+                with open(file.path, "rb") as _f:
+                    _vid_bytes = _f.read()
+            elif isinstance(file, str) and os.path.exists(file):
+                with open(file, "rb") as _f:
+                    _vid_bytes = _f.read()
+        except Exception as _re:
+            print(f"[DEBUG-VIDEO] Failed to read file: {_re}")
+
+        if not _vid_bytes:
+            print(f"[DEBUG-VIDEO] Could not read bytes for {_vid_name}")
+            continue
+
+        # Auto-convert MOV to MP4 (compatibility fix)
+        if _vid_name.lower().endswith('.mov'):
+            try:
+                import tempfile, subprocess
+                with tempfile.NamedTemporaryFile(suffix='.mov', delete=False) as _src:
+                    _src.write(_vid_bytes)
+                    _src_path = _src.name
+                _mp4_path = _src_path + '.mp4'
+                _conv = subprocess.run(
+                    ['ffmpeg', '-i', _src_path,
+                     '-c:v', 'libx264', '-c:a', 'aac',
+                     '-movflags', '+faststart', '-y', _mp4_path],
+                    capture_output=True, timeout=120
+                )
+                if os.path.exists(_mp4_path) and os.path.getsize(_mp4_path) > 0:
+                    with open(_mp4_path, 'rb') as _f:
+                        _vid_bytes = _f.read()
+                    _vid_name = _vid_name[:-4] + '.mp4'
+                    print(f"[DEBUG-VIDEO] MOV→MP4 converted: {len(_vid_bytes)//1024}KB")
+                os.unlink(_src_path)
+                if os.path.exists(_mp4_path):
+                    os.unlink(_mp4_path)
+            except Exception as _ce:
+                print(f"[DEBUG-VIDEO] MOV conversion failed: {_ce}")
+
+        _max_sec = min(_per_vid_max, SEEDANCE_REF_VIDEO_TRIM_TO_SECONDS)
+        _norm, _norm_name, _vid_dur = _normalize_reference_video_bytes(
+            _vid_bytes, _vid_name, max_seconds=_max_sec,
+        )
+        if not _norm:
+            return {
+                "error": "Could not prepare reference video",
+                "details": [
+                    f"{_vid_name}: failed to normalize to H.264 MP4 (install ffmpeg). "
+                    f"Clips must be {SEEDANCE_REF_VIDEO_MIN_SECONDS}–{SEEDANCE_REF_VIDEO_MAX_SECONDS}s, "
+                    "MP4/MOV, under 50MB."
+                ],
+            }
+        _vid_bytes, _vid_name = _norm, _norm_name
+        if _vid_dur is not None and _vid_dur < SEEDANCE_REF_VIDEO_MIN_SECONDS:
+            return {
+                "error": "Reference video too short",
+                "details": [
+                    f"{_vid_name}: {_vid_dur:.1f}s — minimum is {SEEDANCE_REF_VIDEO_MIN_SECONDS}s."
+                ],
+            }
+        print(
+            f"[DEBUG-VIDEO] Normalized {len(_vid_bytes)//1024}KB"
+            + (f", {_vid_dur:.1f}s" if _vid_dur else "")
+        )
+
+        _vid_url = _upload_reference_video_url(_vid_bytes, _vid_name, _session)
+        if _vid_url:
+            video_content_items.append({
+                "type": "video_url",
+                "video_url": {"url": _vid_url},
+                "role": "reference_video",
+            })
+        else:
+            return {
+                "error": "Could not publish reference video URL",
+                "details": [
+                    f"{_vid_name}: ARK could not fetch a valid public video URL. "
+                    "Re-export as MP4 (H.264 + AAC) or retry."
+                ],
+            }
+
+    # ByteDance: @Video N / @Image N order follows content array (videos before images in r2v)
+    if has_ref_media and video_content_items:
+        content_list.extend(video_content_items)
+        content_list.extend(image_content_items)
+    else:
+        content_list.extend(image_content_items)
+        content_list.extend(video_content_items)
     if generate_audio:
         for file in (audios or [])[:3]:
             out = upload_file_to_byteplus(file)
@@ -434,7 +1045,12 @@ def generate_video(prompt_text, scene_description, images=[], videos=[], audios=
     # Validate total mixed input files (max 12 for Seedance 2.0)
     _file_count = sum(1 for it in content_list if isinstance(it, dict) and it.get("type") in ("image_url", "video_url", "audio_url"))
     if _file_count > 12:
-        return f"Too many input files ({_file_count}). Seedance 2.0 allows max 12 mixed files (images + videos + audios)."
+        return {
+            "error": "Too many input files",
+            "details": [
+                f"{_file_count} files attached; Seedance 2.0 allows at most 12 combined images, videos, and audio."
+            ],
+        }
 
     print(f"[DEBUG-GV] content_list items: {len(content_list)}, types: {[it.get('type') for it in content_list if isinstance(it, dict)]}")
 
@@ -460,10 +1076,14 @@ def generate_video(prompt_text, scene_description, images=[], videos=[], audios=
     if is_draft:
         service_tier = "Online"
 
+    _res_out = "480p" if is_draft else (resolution or "720p")
+    if "seedance-2" in str(model).lower() and _res_out not in ("480p", "720p", "1080p"):
+        _res_out = "720p"  # Seedance 2.0 API: 480p / 720p / 1080p
+
     payload = {
         "model": model,
         "content": content_list,
-        "resolution": "480p" if is_draft else resolution,
+        "resolution": _res_out,
         "ratio": aspect_ratio,
         "duration": duration_int,
         "seed": seed_int if seed_int is not None else -1,
@@ -483,7 +1103,6 @@ def generate_video(prompt_text, scene_description, images=[], videos=[], audios=
     print(f"[DEBUG-GV] payload keys: {list(payload.keys())}, model: {payload.get('model')}")
 
     try:
-        _session = _session_for_ark()
         print(f"[DEBUG-GV] calling API...")
         try:
             response = _session.post(VIDEO_TASK_URL, headers=headers, json=payload, timeout=30, verify=_ssl_verify)
@@ -491,21 +1110,24 @@ def generate_video(prompt_text, scene_description, images=[], videos=[], audios=
             print(f"[DEBUG-GV] API response: {response.text[:200]}")
         except Exception as e:
             print(f"[DEBUG-GV-ERROR] {type(e).__name__}: {e}")
-            return f"Video API Error: {e}"
+            return {"error": f"Video API request failed: {e}", "details": []}
         if not response.ok:
             try:
                 err_body = response.json()
                 err_msg = err_body.get("message") or err_body.get("Error", {}).get("Message") or str(err_body)
             except Exception:
                 err_msg = response.text[:500]
-            return f"Video API Error ({response.status_code}): {err_msg}"
+            return {
+                "error": f"Video API rejected the request (HTTP {response.status_code})",
+                "details": [err_msg],
+            }
         res_json = response.json()
         task_data = res_json.get("data") if isinstance(res_json, dict) else None
         task_id = (task_data or {}).get("id") if isinstance(task_data, dict) else None
         if not task_id:
             task_id = res_json.get("id") if isinstance(res_json, dict) else None
         if not task_id:
-            return f"API did not return task id: {res_json}"
+            return {"error": "API did not return a task id", "details": [str(res_json)[:500]]}
         
         # Polling Loop
         poll_max = 600 if is_offline else 120
@@ -553,21 +1175,30 @@ def generate_video(prompt_text, scene_description, images=[], videos=[], audios=
                     err_msg = err_obj.get("message") or err_obj.get("code") or str(err_obj)
                 else:
                     err_msg = s_data.get("message") if isinstance(s_data, dict) else None
-                return f"Failed: {err_msg or 'Unknown error'}"
-        return "Timeout."
+                return {"error": "Video generation failed on the server", "details": [err_msg or "Unknown error"]}
+        return {"error": "Video generation timed out", "details": ["The task did not complete in time. Try Draft mode or fewer reference files."]}
     except requests.exceptions.HTTPError as e:
         try:
             err_body = e.response.json()
             err_msg = err_body.get("message") or str(err_body)
         except Exception:
             err_msg = (e.response.text[:500] if e.response else str(e))
-        return f"Video API Error ({e.response.status_code if e.response else '?'}): {err_msg}"
+        return {
+            "error": f"Video API error (HTTP {e.response.status_code if e.response else '?'})",
+            "details": [err_msg],
+        }
     except requests.exceptions.SSLError as e:
-        return f"Connection error (SSL): {e}. Set ARK_SSL_VERIFY=0 in your environment and restart."
+        return {
+            "error": "Connection error (SSL)",
+            "details": [str(e), "Set ARK_SSL_VERIFY=0 in your environment and restart."],
+        }
     except requests.exceptions.ConnectionError as e:
-        return f"Connection error: {e}. Check network, firewall, or try again."
+        return {
+            "error": "Connection error",
+            "details": [str(e), "Check network, firewall, or VPN and try again."],
+        }
     except Exception as e:
-        return f"Request Failed: {e}"
+        return {"error": "Request failed", "details": [str(e)]}
 
 # ──────────────────────────────────────────────
 # 2. SEEDREAM 5.0 / 4.5 GENERATION (IMAGE)

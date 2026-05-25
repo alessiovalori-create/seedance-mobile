@@ -209,81 +209,46 @@ def encode_image(uploaded_file):
 
 def _translate_tones(shot):
     """
-    Translates 0–10 tone values into a single discursive English sentence for the LLM.
-    Only adds phrases when the value deviates from default/neutral (ignore-if-default).
-    Avoids cluttering the prompt with "no vignette" / "neutral X" when sliders are at default.
+    Paragraph 2 only: exposure and color grading intent (atmospheric).
+    Look/gear constraints (grain, DOF, focus, etc.) belong in Paragraph 3 via pills.
     """
     parts = []
-    b = shot.get('tone_brightness', 5)
-    c = shot.get('tone_contrast', 5)
-    sat = shot.get('tone_saturation', 5)
-    temp = shot.get('tone_temperature', 5)
-    bokeh = shot.get('tone_bokeh', 3)
-    sharp = shot.get('tone_sharpness', 5)
-    vig = shot.get('tone_vignette', 0)
-    chrom = shot.get('tone_chromatic', 0)
-    grain = shot.get('tone_grain', 0)
-    soft = shot.get('tone_softness', 0)
-    motion = shot.get('tone_motionblur', 5)
 
-    default_b, default_c = TONE_DEFAULTS_2_0.get("tone_brightness", 5), TONE_DEFAULTS_2_0.get("tone_contrast", 5)
-    default_sat = TONE_DEFAULTS_2_0.get("tone_saturation", 5)
-    default_temp = TONE_DEFAULTS_2_0.get("tone_temperature", 5)
-    default_bokeh = TONE_DEFAULTS_2_0.get("tone_bokeh", 3)
-    default_sharp = TONE_DEFAULTS_2_0.get("tone_sharpness", 5)
-    default_vig = TONE_DEFAULTS_2_0.get("tone_vignette", 0)
-    default_chrom = TONE_DEFAULTS_2_0.get("tone_chromatic", 0)
-    default_grain = TONE_DEFAULTS_2_0.get("tone_grain", 0)
-    default_soft = TONE_DEFAULTS_2_0.get("tone_softness", 0)
-    default_motion = TONE_DEFAULTS_2_0.get("tone_motionblur", 5)
-
-    # Contrast + brightness (only when non-default)
-    if c != default_c or b != default_b:
-        if c > 7 and b < 4:
-            parts.append("Low-key cinematic lighting with deep shadows and strong contrast")
-        elif c > 6 and b >= 4:
-            parts.append("Strong contrast with defined shadows")
-        elif c < 3:
-            parts.append("Flat, low-contrast look with soft tonal range")
-        elif b > 7 and c <= 5:
+    bright_pill = shot.get("tone_brightness_pill")
+    if bright_pill and bright_pill not in ("Normal", "None", ""):
+        if bright_pill == "Dark":
+            parts.append("dark, underexposed atmosphere")
+        elif bright_pill == "Bright":
+            parts.append("bright, lifted exposure")
+        elif bright_pill == "High-key":
             parts.append("bright, high-key lighting")
-        elif b < 3:
-            parts.append("very dark, underexposed atmosphere")
 
-    if sat != default_sat:
-        if sat >= 7:
-            parts.append("vivid, saturated colors")
-        elif sat <= 3:
+    contrast_pill = shot.get("tone_contrast_pill")
+    if contrast_pill and contrast_pill not in ("Normal", "None", ""):
+        if contrast_pill == "Flat":
+            parts.append("flat, low-contrast look with soft tonal range")
+        elif contrast_pill == "Strong":
+            parts.append("strong contrast with defined shadows")
+        elif contrast_pill == "Crushed":
+            parts.append("low-key cinematic lighting with deep shadows and strong contrast")
+
+    sat_pill = shot.get("tone_saturation_pill")
+    if sat_pill and sat_pill not in ("Natural", "None", ""):
+        if sat_pill == "Muted":
             parts.append("desaturated, muted color palette")
+        elif sat_pill == "Vivid":
+            parts.append("vivid, saturated colors")
+        elif sat_pill == "Hyper":
+            parts.append("hyper-saturated, intense color")
 
-    if temp != default_temp:
-        if temp >= 7:
-            parts.append("warm, golden color temperature")
-        elif temp <= 3:
+    temp_pill = shot.get("tone_temperature_pill")
+    if temp_pill and temp_pill not in ("Neutral", "None", ""):
+        if temp_pill == "Cool":
             parts.append("cold, blue color temperature")
-
-    if bokeh != default_bokeh:
-        if bokeh >= 6:
-            parts.append("heavy background bokeh and shallow depth of field")
-        elif bokeh < 2:
-            parts.append("sharp background with minimal blur")
-
-    if sharp != default_sharp:
-        if sharp >= 7:
-            parts.append("crisp, sharp detail")
-        elif sharp <= 3:
-            parts.append("soft, diffused sharpness")
-
-    if vig != default_vig and vig >= 5:
-        parts.append("visible vignette darkening the edges")
-    if chrom != default_chrom and chrom >= 5:
-        parts.append("subtle chromatic aberration")
-    if grain != default_grain and grain >= 5:
-        parts.append("noticeable film grain")
-    if soft != default_soft and soft >= 5:
-        parts.append("soft bloom or glow")
-    if motion != default_motion and motion >= 7:
-        parts.append("pronounced motion blur on movement")
+        elif temp_pill == "Warm":
+            parts.append("warm color temperature")
+        elif temp_pill == "Golden":
+            parts.append("warm, golden color temperature")
 
     if not parts:
         return ""
@@ -392,10 +357,38 @@ def _get_workflow_system_instruction(workflow_type, image_usage, num_vids, num_i
             "Describe the evolution of the action starting from that point."
         )
     if workflow_type == "Video Editing" and num_vids > 0:
-        return (
-            "You are editing existing video. State explicitly what to replace or modify using @Video and @Image tags "
-            "(e.g. replace character in @Video 1 with figure from @Image 1). Do not describe the clip from scratch."
-        )
+        return """VIDEO EDITING WORKFLOW RULES:
+When workflow is Video Editing with a reference image and source video,
+choose the correct formula based on context:
+
+CASE 1 — REPLACE: The video already contains a subject (person, animal,
+object) that needs to be swapped with the figure from the reference image.
+Formula: "Replace [subject description] in @Video 1 (source video) with
+[description] from @Image 1 (reference). [Action]. The rest of the video
+remains completely unchanged."
+
+CASE 2 — INSERT: The video is an environment, scene, or abstract footage
+WITHOUT an existing subject. The reference image provides a NEW subject
+to be placed INTO the scene.
+Formula: "Insert [description] from @Image 1 (reference) into @Video 1
+(the scene/environment). [Action description — how the subject moves
+through the environment]. The background and environment of @Video 1
+remain completely unchanged."
+
+HOW TO DECIDE:
+- Read the scene description carefully
+- If the description says "replace", "swap", "change X with Y" → CASE 1
+- If the description says "add", "insert", "place", "walk through",
+  "move through", "appear in" → CASE 2
+- If the video is described as an environment (sheets, forest, street,
+  room) without mentioning an existing person/subject → CASE 2
+- If unclear, default to CASE 2 (insert is safer than replace)
+
+ALWAYS end Video Editing prompts with:
+"The background and environment remain completely unchanged throughout."
+
+NEVER output "@Asset mapping:" or any header line before the prompt.
+Start directly with "Replace..." or "Insert..." as the first word."""
     if image_usage == "reference_only" and num_imgs > 0:
         return (
             "Use the uploaded image(s) as REFERENCE ONLY for style, character, or environment. "
@@ -636,92 +629,94 @@ def _build_quality_paragraph(shots_data=None, enforce_stability=False,
     constraints = []
 
     # ── BASE QUALITY (always present) ──────────────────────────────
-    parts.append("4K HD, rich details, sharp focus")
+    parts.append("4K HD, rich details")
 
-    # ── GEAR-SPECIFIC QUALITY DESCRIPTORS ──────────────────────────
-    # Extract from first shot (gear is typically global across shots)
+    # Read pill parameters (explicit user choices). "None" = not configured = skip.
     first_shot = (shots_data or [{}])[0] if shots_data else {}
+
+    grain_pill = first_shot.get("tone_grain_pill", "None")
+    vignette_pill = first_shot.get("tone_vignette_pill", "None")
+    focus_pill = first_shot.get("tone_focus_pill", "None")
+    dof_pill = first_shot.get("tone_dof_pill", "None")
+    chrom_pill = first_shot.get("tone_chromatic_pill", "None")
+    motion_pill = first_shot.get("tone_motion_pill", "None")
+
+    GRAIN_MAP = {
+        "Subtle": "subtle film grain",
+        "Moderate": "moderate film grain",
+        "Heavy": "heavy film grain preserved consistently across all frames",
+    }
+    if grain_pill and grain_pill != "None":
+        constraints.append(GRAIN_MAP.get(grain_pill, grain_pill))
+
+    VIGNETTE_MAP = {
+        "Light": "light vignette at frame edges",
+        "Heavy": "heavy vignette consistent at frame edges",
+    }
+    if vignette_pill and vignette_pill != "None":
+        constraints.append(VIGNETTE_MAP.get(vignette_pill, vignette_pill))
+
+    FOCUS_MAP = {
+        "Soft": "soft focus maintained consistently — do not sharpen",
+        "Sharp": "sharp focus throughout",
+        "Crisp": "crisp detail, maximum sharpness",
+        "Dreamy": "dreamy soft focus with gentle bloom",
+    }
+    if focus_pill and focus_pill != "None":
+        constraints.append(FOCUS_MAP.get(focus_pill, focus_pill))
+
+    DOF_MAP = {
+        "Deep": "deep focus, sharp background throughout",
+        "Medium": "moderate depth of field",
+        "Shallow": "shallow depth of field, background softly blurred",
+        "Extreme": "extreme shallow depth of field — background fully dissolved",
+        "Extreme bokeh": "extreme shallow depth of field — background fully dissolved",
+    }
+    if dof_pill and dof_pill != "None":
+        constraints.append(DOF_MAP.get(dof_pill, dof_pill))
+
+    CHROM_MAP = {
+        "Subtle": "subtle chromatic aberration at frame edges",
+        "Strong": "strong chromatic aberration, consistent and directional",
+        "Visible": "visible chromatic aberration at frame edges",
+        "Heavy": "heavy chromatic aberration",
+    }
+    if chrom_pill and chrom_pill != "None":
+        constraints.append(CHROM_MAP.get(chrom_pill, chrom_pill))
+
+    MOTION_MAP = {
+        "Light": "light motion blur on fast-moving elements",
+        "Moderate": "pronounced motion blur on fast-moving elements",
+        "Heavy": "heavy motion blur on moving elements — do not stabilize",
+    }
+    if motion_pill and motion_pill != "None":
+        constraints.append(MOTION_MAP.get(motion_pill, motion_pill))
 
     lenses_raw = clean_param(first_shot.get("lenses"))
     film_stock_raw = clean_param(first_shot.get("film_stock"))
     sensor_raw = clean_param(first_shot.get("sensor"))
 
-    if lenses_raw:
-        lenses_lower = lenses_raw.lower()
-        if "anamorphic" in lenses_lower:
-            parts.append("anamorphic lens character with horizontal flare")
-            constraints.append("lens flare consistent and directional throughout")
-        elif "fisheye" in lenses_lower:
-            parts.append("fisheye distortion consistent throughout")
-        elif "macro" in lenses_lower:
-            parts.append("macro depth of field shallow and consistent")
-        elif "tilt" in lenses_lower or "shift" in lenses_lower:
-            parts.append("tilt-shift miniature effect consistent")
-        elif any(x in lenses_lower for x in ["vintage", "old", "soviet", "helios"]):
-            parts.append("vintage lens rendering with characteristic swirl bokeh")
+    if lenses_raw and lenses_raw.lower() not in ("not specified", "none", ""):
+        _lens_desc = CINEMATIC_DICTIONARY.get(lenses_raw, lenses_raw)
+        if _lens_desc:
+            parts.append(_lens_desc)
 
-    if film_stock_raw:
-        stock_lower = film_stock_raw.lower()
-        if any(x in stock_lower for x in ["35mm", "16mm", "8mm"]):
-            parts.append(f"{film_stock_raw} film texture")
-            constraints.append("film grain consistent across all frames")
-        elif "reversal" in stock_lower or "slide" in stock_lower:
-            parts.append("high-contrast reversal film look")
-        elif "negative" in stock_lower:
-            parts.append("film negative color science")
+    if film_stock_raw and film_stock_raw.lower() not in (
+        "not specified", "none", "digital (no stock)", "",
+    ):
+        _stock_desc = CINEMATIC_DICTIONARY.get(film_stock_raw, film_stock_raw)
+        if _stock_desc:
+            parts.append(_stock_desc)
 
-    if sensor_raw:
-        sensor_lower = sensor_raw.lower()
-        if any(x in sensor_lower for x in ["vintage", "old", "ccd"]):
-            parts.append("vintage sensor rendering")
-        elif "full frame" in sensor_lower:
-            parts.append("full frame sensor perspective")
+    if sensor_raw and sensor_raw.lower() not in ("not specified", "none", ""):
+        _sensor_desc = CINEMATIC_DICTIONARY.get(sensor_raw, sensor_raw)
+        if _sensor_desc:
+            parts.append(_sensor_desc)
 
-    # ── TONE SLIDER EXTREMES → QUALITY CONSTRAINTS ─────────────────
-    # Only inject when values are extreme (≥8 or ≤2) — not for neutral values
     for shot in (shots_data or []):
-        grain = shot.get("tone_grain", 0)
-        vig = shot.get("tone_vignette", 0)
-        chrom = shot.get("tone_chromatic", 0)
-        soft = shot.get("tone_softness", 0)
-        sharp = shot.get("tone_sharpness", 5)
-        bokeh = shot.get("tone_bokeh", 3)
-        motion = shot.get("tone_motionblur", 5)
-
-        try:
-            if int(float(grain)) >= 8:
-                constraints.append("heavy film grain preserved consistently across all frames")
-            if int(float(vig)) >= 8:
-                constraints.append("heavy vignette consistent at frame edges")
-            if int(float(chrom)) >= 7:
-                constraints.append("chromatic aberration consistent and directional")
-            if int(float(soft)) >= 8:
-                constraints.append("soft bloom/glow consistent throughout")
-            if int(float(sharp)) <= 2:
-                constraints.append("soft focus maintained consistently — do not sharpen")
-            if int(float(bokeh)) >= 9:
-                constraints.append("extreme shallow depth of field — background fully dissolved")
-            if int(float(motion)) >= 8:
-                constraints.append("heavy motion blur on moving elements — do not stabilize")
-        except (TypeError, ValueError):
-            continue
-        break  # Only read first shot for tone extremes (global look)
-
-    # ── VFX CONTINUITY CONSTRAINTS ──────────────────────────────────
-    for shot in (shots_data or []):
-        vfx_atmos = clean_param(shot.get("vfx_atmos"))
         vfx_effects = clean_param(shot.get("vfx_effects"))
-        if vfx_atmos:
-            constraints.append(f"{vfx_atmos} consistent and stable throughout")
         if vfx_effects:
-            constraints.append(f"VFX ({vfx_effects}) consistent across all frames")
-
-    # ── COLOR GRADING CONSISTENCY ───────────────────────────────────
-    for shot in (shots_data or []):
-        color_palette = shot.get("color_palette")
-        if color_palette and isinstance(color_palette, list) and len(color_palette) > 0:
-            constraints.append("color grading consistent — no color drift between frames")
-            break
+            constraints.append(f"VFX ({vfx_effects}) consistent and stable across all frames")
 
     # ── ANTI-DISTORTION FALLBACK (SKILL.md mandatory) ───────────────
     # Varies based on workflow and content type
@@ -796,8 +791,8 @@ def _pre_format_seedance_2_0(scene_description, shots_data, num_imgs, num_vids, 
     elif workflow_type == "Video Editing" and num_vids > 0:
         if num_imgs > 0:
             p1_parts.append(
-                "Replace the subject in @Video 1 (source video) with the figure "
-                "from @Image 1 (replacement reference)."
+                "@Video 1 (source video). @Image 1 (reference figure) — Video Editing: "
+                "use Replace or Insert per scene description."
             )
         else:
             p1_parts.append("Edit @Video 1 (source video) as described below.")
@@ -887,20 +882,11 @@ def _pre_format_seedance_2_0(scene_description, shots_data, num_imgs, num_vids, 
             style_exp = _expand_cinematic(style_raw) if style_raw else None
             mood_exp = _expand_cinematic(mood_raw) if mood_raw else None
 
-            # Tones (only non-default)
+            # Tones — Paragraph 2: exposure/color only (not grain/DOF/focus)
             tone_desc = _translate_tones(shot)
 
-            # Cinematic gear
-            lenses_raw = clean_param(shot.get("lenses"))
-            film_stock_raw = clean_param(shot.get("film_stock"))
-            sensor_raw = clean_param(shot.get("sensor"))
-            lenses_exp = _expand_cinematic(lenses_raw) if lenses_raw else None
-            film_stock_exp = _expand_cinematic(film_stock_raw) if film_stock_raw else None
-            sensor_exp = _expand_cinematic(sensor_raw) if sensor_raw else None
-
-            # VFX
+            # VFX — atmospheric in P2; post VFX in P3
             vfx_atmos = clean_param(shot.get("vfx_atmos"))
-            vfx_effects = clean_param(shot.get("vfx_effects"))
 
             # Build slice
             slice_parts = []
@@ -936,23 +922,8 @@ def _pre_format_seedance_2_0(scene_description, shots_data, num_imgs, num_vids, 
                 if atmos:
                     slice_parts.append("Atmosphere: " + ", ".join(atmos) + ".")
 
-            # Cinematic gear (first slice only)
-            if idx == 0:
-                gear = []
-                if lenses_exp:
-                    gear.append(f"lens: {lenses_exp}")
-                if film_stock_exp:
-                    gear.append(f"film stock: {film_stock_exp}")
-                if sensor_exp:
-                    gear.append(f"sensor: {sensor_exp}")
-                if gear:
-                    slice_parts.append("Gear: " + ", ".join(gear) + ".")
-
-            # VFX
             if vfx_atmos:
                 slice_parts.append(f"Atmosphere FX: {vfx_atmos}.")
-            if vfx_effects:
-                slice_parts.append(f"VFX: {vfx_effects}.")
 
             # Color grading
             color_palette = shot.get("color_palette")
@@ -1167,9 +1138,12 @@ TIMELINE (you MUST respect these timestamps rigidly; do not shift or merge them)
     elif workflow_type == "Video Editing" and num_vids > 0:
         request_context = """
     REQUEST TYPE: VIDEO EDITING
-    - The user wants to EDIT or modify content in the uploaded video using the uploaded image(s).
-    - Explicitly state what to replace/edit: e.g. "Replace the character in @Video 1 with the figure from @Image 1" or "Apply the style of @Image 1 to the scene in @Video 1".
-    - Use @Image tags for the replacement/source and @Video for the target clip.
+    - Edit @Video 1 using @Image 1. Choose REPLACE (swap existing subject) vs INSERT
+      (add subject into environment) from the scene description — see VIDEO EDITING WORKFLOW RULES.
+    - REPLACE when the clip already has a person/object to swap; INSERT when the clip is
+      only environment/scene and the figure from @Image 1 should appear in it.
+    - Open with "Replace..." or "Insert..." (no "@Asset mapping:" header).
+    - End with: the background and environment remain completely unchanged throughout.
     """
     elif image_usage == "first_last_frame" and num_imgs >= 2:
         request_context = """
@@ -1325,63 +1299,57 @@ You may expand on simple prompts (e.g., turn "A man walks" into "A weary man tru
 
 
 def _build_cinematography_string(**params):
-    """
-    Assembles cinematography parameters (from UI) into a single clean string for the LLM.
-    All values are expanded via CINEMATIC_DICTIONARY.get(val, val) (Parameter Expansion for Seedream 5.0).
-    Only includes fields that are present; empty or None are ignored.
-    """
-    def _expand(val):
-        if val is None or (isinstance(val, str) and not val.strip()): return None
-        return CINEMATIC_DICTIONARY.get(str(val).strip(), str(val).strip())
+    """Builds a natural language cinematography description for Seedream 5.0.
+    Camera/shot keywords kept as-is (native model triggers).
+    Style/mood/lighting expanded via dictionary."""
 
-    shot_type = clean_param(params.get("shot_type"))
-    camera = clean_param(params.get("camera"))
-    lenses = clean_param(params.get("lenses"))
-    lighting_type = clean_param(params.get("lighting_type"))
-    lighting_direction = clean_param(params.get("lighting_direction"))
-    lighting_source = clean_param(params.get("lighting_source"))
-    mood = clean_param(params.get("mood"))
-    period = clean_param(params.get("period"))
-    film_stock = clean_param(params.get("film_stock"))
-    sensor = clean_param(params.get("sensor"))
+    def _exp(val):
+        cleaned = clean_param(val)
+        if not cleaned:
+            return None
+        return CINEMATIC_DICTIONARY.get(cleaned, cleaned)
 
-    shot_type_exp = _expand(shot_type) if shot_type else None
-    camera_exp = _expand(camera) if camera else None
-    lenses_exp = _expand(lenses) if lenses else None
-    lighting_type_exp = _expand(lighting_type) if lighting_type else None
-    lighting_direction_exp = _expand(lighting_direction) if lighting_direction else None
-    lighting_source_exp = _expand(lighting_source) if lighting_source else None
-    mood_exp = _expand(mood) if mood else None
-    period_exp = _expand(period) if period else None
-    film_stock_exp = _expand(film_stock) if film_stock else None
-    sensor_exp = _expand(sensor) if sensor else None
+    def _raw(val):
+        return clean_param(val)
 
-    # Raw prompt: always write parameter name first, then expanded description ('Full Shot': 'Frames the subject...')
+    shot_type = _raw(params.get("shot_type"))
+    camera = _raw(params.get("camera"))
+    lenses = _exp(params.get("lenses"))
+    lighting_type = _exp(params.get("lighting_type"))
+    lighting_direction = _exp(params.get("lighting_direction"))
+    lighting_source = _exp(params.get("lighting_source"))
+    mood = _exp(params.get("mood"))
+    period = _exp(params.get("period"))
+    film_stock = _exp(params.get("film_stock"))
+    sensor = _exp(params.get("sensor"))
+
     parts = []
-    if shot_type and shot_type_exp:
-        parts.append(f"'{shot_type}': '{shot_type_exp}'")
-    if camera and camera_exp:
-        parts.append(f"'{camera}': '{camera_exp}'")
-    if lenses and lenses_exp:
-        parts.append(f"'{lenses}': '{lenses_exp}'")
-    if lighting_type and lighting_type_exp:
-        parts.append(f"'{lighting_type}': '{lighting_type_exp}'")
-    if lighting_direction and lighting_direction_exp:
-        parts.append(f"'{lighting_direction}': '{lighting_direction_exp}'")
-    if lighting_source and lighting_source_exp:
-        parts.append(f"'{lighting_source}': '{lighting_source_exp}'")
-    if mood and mood_exp:
-        parts.append(f"'{mood}': '{mood_exp}'")
-    if period and period_exp:
-        parts.append(f"'{period}': '{period_exp}'")
-    if film_stock and film_stock_exp:
-        parts.append(f"'{film_stock}': '{film_stock_exp}'")
-    if sensor and sensor_exp:
-        parts.append(f"'{sensor}': '{sensor_exp}'")
+    if shot_type:
+        parts.append(f"{shot_type} framing")
+    if camera:
+        parts.append(f"{camera} camera angle")
+    if lenses:
+        parts.append(lenses)
+    if lighting_type and lighting_direction:
+        parts.append(f"{lighting_direction} {lighting_type}")
+    elif lighting_type:
+        parts.append(lighting_type)
+    elif lighting_direction:
+        parts.append(f"{lighting_direction} lighting")
+    if lighting_source:
+        parts.append(lighting_source)
+    if mood:
+        parts.append(mood)
+    if film_stock:
+        parts.append(film_stock)
+    if sensor:
+        parts.append(sensor)
+    if period:
+        parts.append(f"{period} period aesthetic")
 
     if not parts:
         return ""
-    return "[Technical Blueprint]\n" + "\n".join(parts) + "."
+    return "Cinematography: " + ", ".join(parts) + "."
 
 
 def _pre_format_seedream_5_0(prompt, style_preset="None", ref_images=None, **kwargs):
@@ -1493,27 +1461,71 @@ def _pre_format_seedream_5_0(prompt, style_preset="None", ref_images=None, **kwa
     return " ".join(parts).strip()
 
 
-def build_image_prompt(prompt, style_preset="None", aspect_ratio="1:1", ref_images=None, temperature=0.5, **kwargs):
+def build_image_prompt(prompt, style_preset="None", aspect_ratio="1:1",
+                       ref_images=None, temperature=0.5, **kwargs):
     """
-    Builds a Seedream 5.0 draft and asks Seed 1.8 to polish it.
-    Aspect ratio / resolution remain payload-only (not part of LLM semantics).
+    Builds optimized prompts for Seedream 5.0 following official ByteDance
+    documentation. Supports four workflow types detected from inputs:
+    - Text-to-image: pure text description
+    - Image editing: modifying an existing image (1 ref image + edit instruction)
+    - Multi-reference blending: combining elements from multiple ref images
+    - Batch/sequential: generating multiple thematically related images
     """
     if not prompt or not prompt.strip():
-        return {"raw_prompt": "[ERROR: Prompt is required]", "optimized_prompt": "[ERROR: Prompt is required]"}
+        return {"raw_prompt": "[ERROR: Prompt is required]",
+                "optimized_prompt": "[ERROR: Prompt is required]"}
 
-    # Reference images: use Seedream format (lowercase "image X", no @ symbol)
+    num_refs = len(ref_images) if ref_images else 0
+
+    # ── Detect workflow type from inputs ──────────────────────────────
+    # Based on official ByteDance Seedream 5.0 use cases
+    is_editing = (num_refs == 1 and any(kw in prompt.lower() for kw in
+        ["change", "replace", "modify", "remove", "add", "keep", "edit",
+         "transform", "convert", "make", "turn into"]))
+    is_multi_ref = num_refs >= 2
+    is_batch = kwargs.get("sequential") == "auto" or kwargs.get("max_images", 1) > 1
+
+    # ── Style context ─────────────────────────────────────────────────
+    style_context = ""
+    style_directive = ""
+    STYLE_MAP = {
+        "Kodak": "Kodak Portra 400 film aesthetic, grain, nostalgic color cast, hard flash",
+        "Guochao": "Guochao Neo-Chinese style, warm red and gilded gold palette, intricate embroidery textures",
+        "Origami": "Cute Chinese-style origami figures, paper texture, soft lighting",
+        "Ice": "Transparent ice sculptures, blue-to-purple gradient, cold ethereal atmosphere",
+        "Pixel": "2D pixel art, top-down view, textured cartoon style",
+        "Abstract": "Abstract futuristic style, liquid metal, silver-gray cool tones",
+        "Monet": "Monet Impressionism, thick oil paint textures, visible brushstrokes",
+        "Infographic": "Hand-drawn educational infographic style",
+    }
+    if style_preset and "None" not in str(style_preset):
+        for key, desc in STYLE_MAP.items():
+            if key.lower() in style_preset.lower():
+                style_context = desc
+                break
+        if not style_context:
+            style_context = style_preset
+        style_directive = f"REQUIRED STYLE: {style_context}. Integrate this style naturally."
+    else:
+        style_directive = "Style: None (Raw Prompt) — do not add preset styles."
+
+    # ── Reference image context ───────────────────────────────────────
+    # Official ByteDance format: "image 1", "image 2" (lowercase, no @ symbol)
     ref_context = ""
-    if ref_images and len(ref_images) > 0:
-        if len(ref_images) == 1:
-            ref_context = "A reference image (image 1) is provided for style/content guidance."
+    if num_refs == 1:
+        if is_editing:
+            ref_context = "Reference: image 1 is the source image to be edited."
         else:
-            ref_context = f"{len(ref_images)} reference images are provided (image 1 through image {len(ref_images)}). Reference them as 'image 1', 'image 2', etc."
+            ref_context = "Reference: image 1 is provided for style/content guidance."
+    elif num_refs >= 2:
+        ref_list = ", ".join([f"image {i+1}" for i in range(min(num_refs, 14))])
+        ref_context = (f"References: {ref_list} are provided. "
+                      f"Use 'image 1', 'image 2' (lowercase) to reference them in the prompt. "
+                      f"Be explicit about what to extract from each: "
+                      f"e.g. 'the character from image 1', 'the clothing from image 2'.")
 
-    # ─── Pre-format draft in Seedream 5.0 photography grammar ───
-    draft_5_0 = _pre_format_seedream_5_0(
-        prompt=prompt,
-        style_preset=style_preset,
-        ref_images=ref_images,
+    # ── Cinematography parameters ─────────────────────────────────────
+    cinematography_string = _build_cinematography_string(
         shot_type=kwargs.get("shot_type"),
         camera=kwargs.get("camera"),
         lenses=kwargs.get("lenses"),
@@ -1526,41 +1538,76 @@ def build_image_prompt(prompt, style_preset="None", aspect_ratio="1:1", ref_imag
         sensor=kwargs.get("sensor"),
     )
 
-    system_instruction = """You are a professional photographer polishing a pre-formatted draft for the Seedream 5.0 image generation engine.
+    # ── System prompt: Expert photographer for Seedream 5.0 ──────────
+    system_instruction = f"""You are a professional photographer and visual director
+crafting image generation prompts for Seedream 5.0.
 
-TASK: Refine the draft into ONE cohesive paragraph. TARGET: 30-100 words.
+OFFICIAL BYTEDANCE SEEDREAM 5.0 PROMPT FORMULA:
+Subject + Action/Pose + Environment + Style/Lighting/Composition
 
-RULES:
-1. Keep ALL technical terms (lens names, film stocks, sensor types) exactly as written.
-2. Integrate everything into natural photographer prose — as if describing a frame to an assistant.
-3. Reference images: use "image 1", "image 2" (lowercase, NO @ symbol).
-4. Do NOT add camera movement — this is a still image.
-5. Do NOT add details the user did not specify.
-6. If a visual style preset is described, it MUST appear in your output.
-7. For image editing (when draft starts with "Keep" or "Using image"): use direct instructions like "Keep [X] unchanged. Change [Y] to [Z]."
-8. NEVER exceed 100 words.
+WORKFLOW-SPECIFIC RULES:
 
-Output ONLY the final prompt. No explanations. No markdown. English only."""
+{"IMAGE EDITING WORKFLOW (1 reference image + edit instruction):" if is_editing else ""}
+{"Use pattern: 'Keep [unchanged elements]. Change [element] to [new description].' Be explicit about what stays the same." if is_editing else ""}
 
-    user_content = f"""DRAFT IN SEEDREAM 5.0 FORMAT (refine into polished prose):
+{"MULTI-REFERENCE BLENDING WORKFLOW (" + str(num_refs) + " reference images):" if is_multi_ref else ""}
+{"Reference each image as 'image 1', 'image 2' (lowercase, no @ symbol). Be explicit: 'the character from image 1 wearing the outfit from image 2'." if is_multi_ref else ""}
 
-{draft_5_0}
+{"BATCH GENERATION WORKFLOW:" if is_batch else ""}
+{"Describe each image in sequence. Example: 'Scene 1: [description]. Scene 2: [description].' Each scene should be self-contained." if is_batch else ""}
+
+{"TEXT-TO-IMAGE WORKFLOW:" if not is_editing and not is_multi_ref and not is_batch else ""}
+{"Pure visual description. Subject + pose + environment + lighting + style." if not is_editing and not is_multi_ref and not is_batch else ""}
+
+MANDATORY RULES — NO EXCEPTIONS:
+- Write ONE cohesive paragraph (or numbered scenes for batch). No bullet points.
+- MAX 500 words. Be precise and visual, not verbose.
+- Use "image 1", "image 2" (lowercase) for references — NEVER "@Image 1" (that is for video).
+- When cinematography parameters are provided, integrate them naturally.
+- {style_directive}
+- NO default values for unspecified parameters (no silent modification).
+- NO generic quality fillers ("ultra HD", "masterpiece", "best quality") unless user specified.
+- English only. Output ONLY the final prompt. No preamble, no explanations."""
+
+    # ── User content ──────────────────────────────────────────────────
+    user_content = f"""USER'S IDEA:
+{prompt.strip()}
+
+{ref_context}
+{style_directive}
 """
+    if cinematography_string:
+        user_content += f"\n{cinematography_string}\nIntegrate these parameters naturally into the description."
 
-    raw_blueprint_string = draft_5_0
+    user_content += "\nWrite the prompt now:"
 
+    # ── Raw prompt (pre-LLM baseline) ─────────────────────────────────
+    raw_parts = [prompt.strip()]
+    if style_context:
+        raw_parts.append(style_context)
+    if ref_context:
+        raw_parts.append(ref_context)
+    if cinematography_string:
+        raw_parts.append(cinematography_string)
+    raw_blueprint = " | ".join(raw_parts)
+
+    # ── LLM call ──────────────────────────────────────────────────────
     try:
         expanded_prompt = call_llm_for_prompt(
-            system_instruction, user_content, temperature=temperature, model_id=SEED_1_8_ID
+            system_instruction, user_content,
+            temperature=temperature,
+            model_id=LLM_ENDPOINT_ID
         )
         if expanded_prompt and str(expanded_prompt).strip():
-            # Seedream 5.0 official limit: 600 words. Use 500 for safety margin.
             expanded_prompt = _truncate_prompt(expanded_prompt, max_words=500)
-            if "\n\n" in expanded_prompt.strip():
+            # Clean up if LLM added multiple paragraphs (take first block)
+            if "\n\n" in expanded_prompt.strip() and not is_batch:
                 expanded_prompt = expanded_prompt.strip().split("\n\n")[0].strip()
         else:
-            expanded_prompt = "[ERROR: LLM returned empty. Check API key and endpoint.]"
-        return {"raw_prompt": raw_blueprint_string, "optimized_prompt": expanded_prompt}
+            expanded_prompt = "[ERROR: LLM returned empty. Check API key.]"
+        return {"raw_prompt": raw_blueprint, "optimized_prompt": expanded_prompt}
     except Exception as e:
         traceback.print_exc()
-        return {"raw_prompt": raw_blueprint_string, "optimized_prompt": "", "error": str(e)}
+        return {"raw_prompt": raw_blueprint,
+                "optimized_prompt": f"[ERROR: {e}]",
+                "error": str(e)}

@@ -4,7 +4,7 @@ from datetime import datetime
 
 import streamlit as st
 
-from arkitect.shared import _DB_DIR
+from arkitect.shared import _DB_DIR, AssetFile, CachedUploadedFile
 from arkitect.storage import load_projects
 
 _CONSOLE_FILE_AND_ASSET_PICKER_KEYS = frozenset({
@@ -120,8 +120,9 @@ def _console_snapshot_key_list():
                 f"{k}_shot_type", f"{k}_style", f"{k}_mood", f"{k}_period",
                 f"{k}_camera", f"{k}_lenses", f"{k}_film_stock", f"{k}_sensor",
                 f"{k}_light_src", f"{k}_light_dir", f"{k}_light",
-                f"{k}_tb", f"{k}_tc", f"{k}_ts", f"{k}_tt", f"{k}_tbo", f"{k}_tsh",
-                f"{k}_tv", f"{k}_tca", f"{k}_tg", f"{k}_tso", f"{k}_tmb",
+                f"{k}_pill_grain", f"{k}_pill_vignette", f"{k}_pill_focus", f"{k}_pill_dof",
+                f"{k}_pill_brightness", f"{k}_pill_contrast", f"{k}_pill_saturation",
+                f"{k}_pill_temperature", f"{k}_pill_chromatic", f"{k}_pill_motion",
                 f"{k}_vfx_a", f"{k}_vfx_e",
                 f"{k}_m1_type", f"{k}_m1_pace", f"{k}_m1_s", f"{k}_m1_e",
                 f"{k}_m1_ca", f"{k}_m1_so",
@@ -322,17 +323,127 @@ def _save_console_param_snapshot():
 
 
 def _restore_console_param_snapshot():
-    """Re-inject snapshotted params on every Console rerun."""
+    """Re-inject snapshotted params when returning to Console.
+
+    After navigating away, Streamlit may keep stale widget keys or drop them.
+    When ``_console_was_away`` is set, overwrite session_state from the snapshot
+    so cinematography params are not replaced by defaults.
+    """
     if st.session_state.get("active_page") != "console":
         return
-    if st.session_state.get("_console_was_away"):
-        st.session_state["_console_was_away"] = False
+    was_away = st.session_state.pop("_console_was_away", False)
     snap = st.session_state.get("_console_param_snapshot")
     if not isinstance(snap, dict) or not snap:
+        # Fall back to per-project JSON if in-memory snapshot is empty/corrupt
+        pid = st.session_state.get("active_project_id")
+        if pid and was_away:
+            _load_project_console_settings(pid)
         return
+    if was_away:
+        st.session_state["_console_just_restored"] = True
     for sk, sv in snap.items():
         if _console_session_state_assign_forbidden(sk):
             continue
-        if sk in st.session_state:
+        if was_away or sk not in st.session_state:
+            st.session_state[sk] = sv
+
+
+def _clear_console_param_keys():
+    """Remove all snapshotted console/cinematography keys (RESET)."""
+    for k in _console_snapshot_key_list():
+        if k in _CONSOLE_SNAPSHOT_SKIP:
             continue
-        st.session_state[sk] = sv
+        if _console_session_state_assign_forbidden(k):
+            continue
+        st.session_state.pop(k, None)
+
+
+def _asset_picker_label(asset):
+    return f"{asset['name']} ({asset.get('size_str', '')})"
+
+
+def _cached_from_asset_catalog_entry(asset):
+    """Build CachedUploadedFile from an assets catalog row."""
+    path = asset.get("path") or ""
+    if not path or not os.path.isfile(path):
+        return None
+    mime = asset.get("mime") or "image/jpeg"
+    with open(path, "rb") as f:
+        data = f.read()
+    return CachedUploadedFile(asset["name"], data, mime)
+
+
+def apply_assets_selection_to_console(entry_point, catalog_assets, image_usage=None):
+    """
+    Load ordered Assets images into the Seedance 2.0 Console workflow.
+    entry_point: First Frame | First and Last Frames | All-in-One Reference
+    catalog_assets: list of catalog dicts (image type), in @Image tag order.
+    """
+    assets = [a for a in (catalog_assets or []) if a.get("type") == "image"]
+    files = []
+    tag_map = {}
+    labels = []
+    for i, asset in enumerate(assets):
+        cached = _cached_from_asset_catalog_entry(asset)
+        if not cached:
+            continue
+        files.append(cached)
+        tag = f"@Image {len(files)}"
+        tag_map[asset["name"]] = tag
+        orig = asset.get("original_name")
+        if orig:
+            tag_map[orig] = tag
+        labels.append(_asset_picker_label(asset))
+
+    # Clear previous reference caches so workflow switch is clean
+    for k in (
+        "_cached_s2_images", "_cached_s2_first_frame", "_cached_s2_last_frame", "_cached_s2_first_only",
+        "_persist_s2_assets_images", "_persist_s2_assets_first_frame", "_persist_s2_assets_last_frame",
+        "_persist_s2_assets_first_only",
+        "_persisted_img_1", "_persisted_img_2", "_persisted_img_3", "_persisted_img_4",
+        "_seedream_to_seedance_ref",
+    ):
+        st.session_state.pop(k, None)
+
+    # Cannot assign model_selector after its widget exists — use flag read before st.radio
+    st.session_state["_switch_to_seedance"] = True
+    st.session_state["s2_entry_point"] = entry_point
+    st.session_state["_console_ref_tag_map"] = tag_map
+
+    if entry_point == "First Frame":
+        if files:
+            st.session_state["_cached_s2_first_only"] = files[0]
+            st.session_state["_persist_s2_assets_first_only"] = labels[0]
+    elif entry_point == "First and Last Frames":
+        if len(files) >= 1:
+            st.session_state["_cached_s2_first_frame"] = files[0]
+            st.session_state["_persist_s2_assets_first_frame"] = labels[0]
+        if len(files) >= 2:
+            st.session_state["_cached_s2_last_frame"] = files[1]
+            st.session_state["_persist_s2_assets_last_frame"] = labels[1]
+    else:
+        st.session_state["_cached_s2_images"] = files[:9]
+        st.session_state["_persist_s2_assets_images"] = labels[:9]
+        if image_usage:
+            st.session_state["s2_image_usage"] = image_usage
+
+
+def consume_assets_to_console_pending():
+    """
+    Apply a pending Assets → Console transfer (set from Assets page).
+    Returns (ok, message) for UI toast.
+    """
+    pending = st.session_state.pop("_assets_to_console_pending", None)
+    if not pending:
+        return False, ""
+    entry_point = pending.get("entry_point") or "All-in-One Reference"
+    asset_ids = pending.get("asset_ids") or []
+    image_usage = pending.get("image_usage")
+    catalog = pending.get("catalog") or []
+    by_id = {a["id"]: a for a in catalog if a.get("id")}
+    ordered = [by_id[aid] for aid in asset_ids if aid in by_id]
+    if not ordered:
+        return False, "No valid images found in Assets."
+    apply_assets_selection_to_console(entry_point, ordered, image_usage=image_usage)
+    tags = ", ".join(f"@Image {i + 1}" for i in range(len(ordered)))
+    return True, f"Loaded {len(ordered)} image(s) as {tags} → {entry_point}"

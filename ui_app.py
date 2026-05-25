@@ -1330,6 +1330,42 @@ if check_password():
         div[data-testid="stRadio"][data-key="assets_filter_radio"] label > div:first-child {
             display: none !important;
         }
+        /* Console — Tones pill selectors (one row per parameter) */
+        div[data-testid="stRadio"][data-key*="_pill_"] > div {
+            flex-wrap: wrap !important;
+            gap: 6px !important;
+            background: transparent !important;
+            border: none !important;
+            padding: 0 !important;
+        }
+        div[data-testid="stRadio"][data-key*="_pill_"] label {
+            margin: 0 !important;
+            padding: 6px 14px !important;
+            border-radius: 999px !important;
+            border: 1px solid rgba(255,255,255,0.22) !important;
+            background: rgba(255,255,255,0.04) !important;
+            color: #b8b8a8 !important;
+            font-size: 0.72rem !important;
+            font-weight: 600 !important;
+            letter-spacing: 0.03em !important;
+            cursor: pointer !important;
+            transition: background 0.15s, border-color 0.15s, color 0.15s !important;
+        }
+        div[data-testid="stRadio"][data-key*="_pill_"] label:hover {
+            border-color: rgba(0,229,204,0.45) !important;
+            color: #e8e8dc !important;
+        }
+        div[data-testid="stRadio"][data-key*="_pill_"] label:has(input:checked) {
+            background: rgba(0,229,204,0.18) !important;
+            border-color: #00E5CC !important;
+            color: #00E5CC !important;
+        }
+        div[data-testid="stRadio"][data-key*="_pill_"] input[type="radio"] {
+            display: none !important;
+        }
+        div[data-testid="stRadio"][data-key*="_pill_"] label > div:first-child {
+            display: none !important;
+        }
         /* ASSETS delete — icona compatta senza scale (evita tagli da overflow) */
         div[data-testid="stButton"][data-key^="asset_del_"] {
             overflow: visible !important;
@@ -1536,6 +1572,12 @@ if check_password():
         if 'gallery_videos' not in st.session_state: st.session_state.gallery_videos = loaded_videos
         if 'gallery_images' not in st.session_state: st.session_state.gallery_images = loaded_images
     if 'active_page' not in st.session_state: st.session_state.active_page = 'console'
+    # Detect return to Console from another page (Assets, Gallery, …)
+    _prev_page = st.session_state.get("_prev_active_page", "console")
+    _curr_page = st.session_state.get("active_page", "console")
+    if _curr_page == "console" and _prev_page not in ("console", None):
+        st.session_state["_console_was_away"] = True
+    st.session_state["_prev_active_page"] = _curr_page
     _restore_console_param_snapshot()
     if 'model_selector' not in st.session_state: st.session_state.model_selector = 'SEEDANCE 2.0'
     if 'video_resolution' not in st.session_state: st.session_state.video_resolution = "1080p"
@@ -1566,17 +1608,16 @@ if check_password():
             if f"{_k}_light_src" not in st.session_state: st.session_state[f"{_k}_light_src"] = LIST_LIGHTING_SOURCE[0]
             if f"{_k}_light_dir" not in st.session_state: st.session_state[f"{_k}_light_dir"] = LIST_LIGHTING_DIRECTION[0]
             if f"{_k}_light" not in st.session_state: st.session_state[f"{_k}_light"] = LIST_LIGHTING[0]
-            if f"{_k}_tb" not in st.session_state: st.session_state[f"{_k}_tb"] = 5
-            if f"{_k}_tc" not in st.session_state: st.session_state[f"{_k}_tc"] = 5
-            if f"{_k}_ts" not in st.session_state: st.session_state[f"{_k}_ts"] = 5
-            if f"{_k}_tt" not in st.session_state: st.session_state[f"{_k}_tt"] = 5
-            if f"{_k}_tbo" not in st.session_state: st.session_state[f"{_k}_tbo"] = 3
-            if f"{_k}_tsh" not in st.session_state: st.session_state[f"{_k}_tsh"] = 5
-            if f"{_k}_tv" not in st.session_state: st.session_state[f"{_k}_tv"] = 0
-            if f"{_k}_tca" not in st.session_state: st.session_state[f"{_k}_tca"] = 0
-            if f"{_k}_tg" not in st.session_state: st.session_state[f"{_k}_tg"] = 0
-            if f"{_k}_tso" not in st.session_state: st.session_state[f"{_k}_tso"] = 0
-            if f"{_k}_tmb" not in st.session_state: st.session_state[f"{_k}_tmb"] = 5
+            if f"{_k}_pill_grain" not in st.session_state: st.session_state[f"{_k}_pill_grain"] = "None"
+            if f"{_k}_pill_vignette" not in st.session_state: st.session_state[f"{_k}_pill_vignette"] = "None"
+            if f"{_k}_pill_focus" not in st.session_state: st.session_state[f"{_k}_pill_focus"] = "Sharp"
+            if f"{_k}_pill_dof" not in st.session_state: st.session_state[f"{_k}_pill_dof"] = "Medium"
+            if f"{_k}_pill_brightness" not in st.session_state: st.session_state[f"{_k}_pill_brightness"] = "Normal"
+            if f"{_k}_pill_contrast" not in st.session_state: st.session_state[f"{_k}_pill_contrast"] = "Normal"
+            if f"{_k}_pill_saturation" not in st.session_state: st.session_state[f"{_k}_pill_saturation"] = "Natural"
+            if f"{_k}_pill_temperature" not in st.session_state: st.session_state[f"{_k}_pill_temperature"] = "Neutral"
+            if f"{_k}_pill_chromatic" not in st.session_state: st.session_state[f"{_k}_pill_chromatic"] = "None"
+            if f"{_k}_pill_motion" not in st.session_state: st.session_state[f"{_k}_pill_motion"] = "None"
             if f"{_k}_m1_type" not in st.session_state: st.session_state[f"{_k}_m1_type"] = LIST_MOVEMENTS[0]
             if f"{_k}_m1_pace" not in st.session_state: st.session_state[f"{_k}_m1_pace"] = LIST_PACES[0]
             if f"{_k}_m1_s" not in st.session_state: st.session_state[f"{_k}_m1_s"] = (0 if _shot_n == 1 else 5)
