@@ -203,7 +203,7 @@ if not _STATIC_SERVING_SUPPORTED:
 
 def _to_static_url(file_path):
     """Convert a local file path to a Streamlit static URL.
-    Serves downloads/, assets/ (via downloads/_assets symlink), and static/.
+    Serves generated/ (projects, assets, references, exports) via static/.
     Returns original path as fallback if conversion fails."""
     if not file_path:
         return ""

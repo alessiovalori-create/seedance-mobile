@@ -83,16 +83,15 @@ def _console_snapshot_key_list():
 
     keys.update([
         "video_resolution", "video_aspect_ratio", "common_duration",
-        "gen_mode_selector", "s2_gen_mode",
+        "s2_speed_mode", "s2_seed_mode", "s2_last_seed", "s2_seed_manual",
         "sd_resolution", "sd_ar_select",
-        "common_temperature", "common_num_variations", "last_num_variations",
-        "sd_optimize", "enforce_stability",
+        "sd_optimize", "sd_num_variations", "sd_variation_mode", "enforce_stability",
         "enable_audio", "s2_audio_output",
         "v_lang", "v_emo", "v_timbre", "v_pace",
         "s2_dialogue", "s2_sfx",
     ])
-    for i in range(5):
-        keys.update([f"seed_input_{i}"])
+    for i in range(15):
+        keys.update([f"sd_seed_input_{i}"])
 
     keys.update([
         "sd_shot_type", "sd_mood", "sd_period",
@@ -178,8 +177,8 @@ def _default_console_params():
         "common_duration": 15,
         "s2_smart_duration": False,
         "s2_watermark": False,
-        "common_temperature": 0.5,
-        "common_num_variations": 1,
+        "s2_speed_mode": "Standard",
+        "s2_seed_mode": "🎲 New variation",
         "enable_audio": False,
         "en_s2": False,
         "en_s3": False,
@@ -188,7 +187,6 @@ def _default_console_params():
         "v_emo": "Neutral",
         "v_timbre": "Normal",
         "v_pace": "Normal",
-        "s2_gen_mode": "Standard (Online)",
         "s2_entry_point": "All-in-One Reference",
         "s2_workflow": "Standard Generation",
         "s2_workflow_fl": "Standard Generation",
@@ -197,6 +195,8 @@ def _default_console_params():
         "sd_ar_select": "Smart",
         "sd_style_select": "None (Raw Prompt)",
         "sd_optimize": "None",
+        "sd_num_variations": 1,
+        "sd_variation_mode": "Independent (per seed)",
         "action_desc_s2": "",
         "sd_prompt_input": "",
     }
@@ -373,59 +373,199 @@ def _cached_from_asset_catalog_entry(asset):
     return CachedUploadedFile(asset["name"], data, mime)
 
 
-def apply_assets_selection_to_console(entry_point, catalog_assets, image_usage=None):
+def _console_file_from_asset(asset):
+    """Console-ready file handle from a catalog row (images, videos, audio)."""
+    path = asset.get("path") or ""
+    if not path or not os.path.isfile(path):
+        return None
+    mime = asset.get("mime") or "application/octet-stream"
+    atype = asset.get("type")
+    if atype in ("video", "audio"):
+        return AssetFile(path, asset["name"], mime)
+    return _cached_from_asset_catalog_entry(asset)
+
+
+def _tag_asset_names(tag_map: dict, asset: dict, tag: str) -> None:
+    tag_map[asset["name"]] = tag
+    orig = asset.get("original_name")
+    if orig:
+        tag_map[orig] = tag
+
+
+def _ref_file_path(f) -> str:
+    p = getattr(f, "_path", None) or ""
+    if p and os.path.isfile(p):
+        return os.path.abspath(p)
+    return ""
+
+
+def active_console_reference_lists():
+    """File-like objects currently loaded as Console references (ordered)."""
+    model = st.session_state.get("model_selector", "SEEDANCE 2.0")
+    if model == "SEEDREAM 5.0":
+        return list(st.session_state.get("_cached_sd_refs") or []), [], []
+
+    entry = st.session_state.get("s2_entry_point", "All-in-One Reference")
+    if entry == "First Frame":
+        fo = st.session_state.get("_cached_s2_first_only")
+        return ([fo] if fo else []), [], []
+    if entry == "First and Last Frames":
+        ff = st.session_state.get("_cached_s2_first_frame")
+        lf = st.session_state.get("_cached_s2_last_frame")
+        return [x for x in (ff, lf) if x], [], []
+
+    if st.session_state.get("s2_workflow") == "Text to Video":
+        return [], [], []
+
+    return (
+        list(st.session_state.get("_cached_s2_images") or []),
+        list(st.session_state.get("_cached_s2_videos") or []),
+        list(st.session_state.get("_cached_s2_audio") or []),
+    )
+
+
+def build_console_reference_tag_map(catalog: list | None = None) -> dict[str, str]:
+    """Map catalog asset names → @Image/@Video/@Audio N for active console refs."""
+    imgs, vids, auds = active_console_reference_lists()
+    by_path: dict[str, dict] = {}
+    if catalog:
+        for asset in catalog:
+            path = asset.get("path") or ""
+            if path and os.path.isfile(path):
+                by_path[os.path.abspath(path)] = asset
+
+    tag_map: dict[str, str] = {}
+
+    def _tag_files(files, prefix: str) -> None:
+        for i, f in enumerate(files):
+            tag = f"@{prefix} {i + 1}"
+            name = getattr(f, "name", "") or ""
+            if name:
+                tag_map[name] = tag
+            path = _ref_file_path(f)
+            if path and path in by_path:
+                _tag_asset_names(tag_map, by_path[path], tag)
+
+    _tag_files(imgs, "Image")
+    _tag_files(vids, "Video")
+    _tag_files(auds, "Audio")
+    return tag_map
+
+
+def apply_assets_selection_to_console(
+    entry_point,
+    catalog_assets,
+    image_usage=None,
+    *,
+    preserve_workflow: bool = True,
+):
     """
-    Load ordered Assets images into the Seedance 2.0 Console workflow.
-    entry_point: First Frame | First and Last Frames | All-in-One Reference
-    catalog_assets: list of catalog dicts (image type), in @Image tag order.
+    Load ordered Assets into the Seedance 2.0 Console workflow.
+    Images → @Image N; videos → @Video N (All-in-One Reference).
     """
-    assets = [a for a in (catalog_assets or []) if a.get("type") == "image"]
-    files = []
-    tag_map = {}
-    labels = []
-    for i, asset in enumerate(assets):
-        cached = _cached_from_asset_catalog_entry(asset)
-        if not cached:
-            continue
-        files.append(cached)
-        tag = f"@Image {len(files)}"
-        tag_map[asset["name"]] = tag
-        orig = asset.get("original_name")
-        if orig:
-            tag_map[orig] = tag
-        labels.append(_asset_picker_label(asset))
+    ordered = list(catalog_assets or [])
+    images = [a for a in ordered if a.get("type") == "image"]
+    videos = [a for a in ordered if a.get("type") == "video"]
+    audios = [a for a in ordered if a.get("type") == "audio"]
+    has_videos = bool(videos)
+    has_audios = bool(audios)
+
+    if has_videos or has_audios:
+        entry_point = "All-in-One Reference"
 
     # Clear previous reference caches so workflow switch is clean
     for k in (
-        "_cached_s2_images", "_cached_s2_first_frame", "_cached_s2_last_frame", "_cached_s2_first_only",
-        "_persist_s2_assets_images", "_persist_s2_assets_first_frame", "_persist_s2_assets_last_frame",
+        "_cached_s2_images", "_cached_s2_videos", "_cached_s2_audio",
+        "_cached_s2_first_frame", "_cached_s2_last_frame", "_cached_s2_first_only",
+        "_persist_s2_assets_images", "_persist_s2_assets_videos", "_persist_s2_assets_audio",
+        "_persist_s2_assets_first_frame", "_persist_s2_assets_last_frame",
         "_persist_s2_assets_first_only",
         "_persisted_img_1", "_persisted_img_2", "_persisted_img_3", "_persisted_img_4",
+        "_persisted_vid_1", "_persisted_aud_1",
         "_seedream_to_seedance_ref",
+        "s2_assets_images", "s2_assets_videos", "s2_assets_audio",
+        "s2_assets_first_frame", "s2_assets_last_frame", "s2_assets_first_only",
     ):
         st.session_state.pop(k, None)
 
-    # Cannot assign model_selector after its widget exists — use flag read before st.radio
     st.session_state["_switch_to_seedance"] = True
     st.session_state["s2_entry_point"] = entry_point
-    st.session_state["_console_ref_tag_map"] = tag_map
+
+    tag_map: dict[str, str] = {}
+    img_files = []
+    img_labels = []
+    vid_files = []
+    vid_labels = []
+    aud_files = []
+    aud_labels = []
 
     if entry_point == "First Frame":
-        if files:
-            st.session_state["_cached_s2_first_only"] = files[0]
-            st.session_state["_persist_s2_assets_first_only"] = labels[0]
+        for asset in images[:1]:
+            f = _console_file_from_asset(asset)
+            if not f:
+                continue
+            img_files.append(f)
+            img_labels.append(_asset_picker_label(asset))
+            _tag_asset_names(tag_map, asset, "@Image 1")
+        if img_files:
+            st.session_state["_cached_s2_first_only"] = img_files[0]
+            st.session_state["_persist_s2_assets_first_only"] = img_labels[0]
     elif entry_point == "First and Last Frames":
-        if len(files) >= 1:
-            st.session_state["_cached_s2_first_frame"] = files[0]
-            st.session_state["_persist_s2_assets_first_frame"] = labels[0]
-        if len(files) >= 2:
-            st.session_state["_cached_s2_last_frame"] = files[1]
-            st.session_state["_persist_s2_assets_last_frame"] = labels[1]
+        for i, asset in enumerate(images[:2]):
+            f = _console_file_from_asset(asset)
+            if not f:
+                continue
+            img_files.append(f)
+            img_labels.append(_asset_picker_label(asset))
+            _tag_asset_names(tag_map, asset, f"@Image {len(img_files)}")
+        if len(img_files) >= 1:
+            st.session_state["_cached_s2_first_frame"] = img_files[0]
+            st.session_state["_persist_s2_assets_first_frame"] = img_labels[0]
+        if len(img_files) >= 2:
+            st.session_state["_cached_s2_last_frame"] = img_files[1]
+            st.session_state["_persist_s2_assets_last_frame"] = img_labels[1]
     else:
-        st.session_state["_cached_s2_images"] = files[:9]
-        st.session_state["_persist_s2_assets_images"] = labels[:9]
+        for asset in images[:9]:
+            f = _console_file_from_asset(asset)
+            if not f:
+                continue
+            img_files.append(f)
+            img_labels.append(_asset_picker_label(asset))
+            _tag_asset_names(tag_map, asset, f"@Image {len(img_files)}")
+        for asset in videos[:3]:
+            f = _console_file_from_asset(asset)
+            if not f:
+                continue
+            vid_files.append(f)
+            vid_labels.append(_asset_picker_label(asset))
+            _tag_asset_names(tag_map, asset, f"@Video {len(vid_files)}")
+        for asset in audios[:3]:
+            f = _console_file_from_asset(asset)
+            if not f:
+                continue
+            aud_files.append(f)
+            aud_labels.append(_asset_picker_label(asset))
+            _tag_asset_names(tag_map, asset, f"@Audio {len(aud_files)}")
+
+        st.session_state["_cached_s2_images"] = img_files
+        st.session_state["_persist_s2_assets_images"] = img_labels
+        st.session_state["_cached_s2_videos"] = vid_files
+        st.session_state["_persist_s2_assets_videos"] = vid_labels
+        st.session_state["_cached_s2_audio"] = aud_files
+        st.session_state["_persist_s2_assets_audio"] = aud_labels
+
         if image_usage:
             st.session_state["s2_image_usage"] = image_usage
+        elif has_videos or has_audios:
+            workflow = st.session_state.get("s2_workflow", "Standard Generation")
+            if not img_files or workflow in ("Video Extension", "Video Editing"):
+                st.session_state["s2_image_usage"] = "reference_only"
+            elif not preserve_workflow:
+                pass
+        elif not preserve_workflow and image_usage is None:
+            pass
+
+    st.session_state["_console_ref_tag_map"] = tag_map
 
 
 def consume_assets_to_console_pending():
@@ -436,14 +576,76 @@ def consume_assets_to_console_pending():
     pending = st.session_state.pop("_assets_to_console_pending", None)
     if not pending:
         return False, ""
-    entry_point = pending.get("entry_point") or "All-in-One Reference"
     asset_ids = pending.get("asset_ids") or []
     image_usage = pending.get("image_usage")
     catalog = pending.get("catalog") or []
+    preserve_workflow = pending.get("preserve_workflow", True)
     by_id = {a["id"]: a for a in catalog if a.get("id")}
     ordered = [by_id[aid] for aid in asset_ids if aid in by_id]
     if not ordered:
-        return False, "No valid images found in Assets."
-    apply_assets_selection_to_console(entry_point, ordered, image_usage=image_usage)
-    tags = ", ".join(f"@Image {i + 1}" for i in range(len(ordered)))
-    return True, f"Loaded {len(ordered)} image(s) as {tags} → {entry_point}"
+        return False, "No valid assets found in Assets."
+
+    has_video = any(a.get("type") == "video" for a in ordered)
+    has_audio = any(a.get("type") == "audio" for a in ordered)
+    if has_video or has_audio:
+        entry_point = "All-in-One Reference"
+    else:
+        entry_point = pending.get("entry_point") or st.session_state.get(
+            "s2_entry_point", "All-in-One Reference"
+        )
+
+    apply_assets_selection_to_console(
+        entry_point,
+        ordered,
+        image_usage=image_usage,
+        preserve_workflow=preserve_workflow,
+    )
+
+    img_n = sum(1 for a in ordered if a.get("type") == "image")
+    vid_n = sum(1 for a in ordered if a.get("type") == "video")
+    aud_n = sum(1 for a in ordered if a.get("type") == "audio")
+    parts = []
+    if img_n:
+        parts.append(f"{img_n} image(s)")
+    if vid_n:
+        parts.append(f"{vid_n} video(s) as @Video")
+    if aud_n:
+        parts.append(f"{aud_n} audio(s) as @Audio")
+    summary = ", ".join(parts) if parts else f"{len(ordered)} asset(s)"
+    return True, f"Loaded {summary} → {entry_point}"
+
+
+def consume_assets_to_console_pending_seedream():
+    """Pop the Seedream pending payload and apply it. Returns (applied: bool, message: str)."""
+    payload = st.session_state.pop("_assets_to_console_pending_seedream", None)
+    if not payload:
+        return (False, "")
+    asset_ids = payload.get("asset_ids") or []
+    catalog = payload.get("catalog") or []
+    if not asset_ids:
+        return (False, "No assets to send.")
+
+    # Resolve IDs to ordered catalog dicts, preserving order
+    _by_id = {a["id"]: a for a in catalog}
+    ordered = [_by_id[aid] for aid in asset_ids if aid in _by_id]
+    if not ordered:
+        return (False, "No matching assets found in catalog.")
+
+    return apply_assets_selection_to_seedream(ordered)
+
+
+def apply_assets_selection_to_seedream(catalog_assets):
+    """Pre-seed Seedream's in-Console 'From Assets' picker. Returns (True, message)."""
+    # Build the labels using the SAME format as console.py:841 — f"{a['name']} ({a['size_str']})"
+    labels = [f"{a['name']} ({a['size_str']})" for a in catalog_assets]
+
+    # Clear the widget key so the default= takes effect on next render
+    st.session_state.pop("sd_assets_refs", None)
+
+    # Pre-seed the persistence key that Seedream's picker reads as default
+    st.session_state["_persist_sd_assets_refs"] = labels
+
+    # Force model switch to Seedream
+    st.session_state["_switch_to_seedream"] = True
+
+    return (True, f"Pre-seeded {len(labels)} Seedream reference(s).")

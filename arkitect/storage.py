@@ -9,21 +9,23 @@ import streamlit as st
 from arkitect.shared import (
     CachedUploadedFile,
     AssetFile,
+    GENERATED_RESERVED_DIRS,
+    _ASSETS_DIR,
     _DB_DIR,
-    _PERSIST_DIR,
     _GENERATED_DIR,
+    _UPLOADS_DIR,
 )
 
 GALLERY_FILE = os.path.join(_DB_DIR, "gallery.json")
 SNAPSHOTS_FILE = os.path.join(_DB_DIR, "snapshots.json")
 
-ASSETS_DIR = os.path.join(_PERSIST_DIR, "assets")
+ASSETS_DIR = _ASSETS_DIR
 ASSETS_CATALOG_FILE = os.path.join(_DB_DIR, "assets_catalog.json")
 
 PROJECTS_FILE = os.path.join(_DB_DIR, "projects.json")
 
 DOWNLOADS_DIR = _GENERATED_DIR
-UPLOADS_DIR = os.path.join(_GENERATED_DIR, "uploads")
+UPLOADS_DIR = _UPLOADS_DIR
 
 IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.webp', '.gif'}
 VIDEO_EXTS = {'.mp4', '.mov', '.webm'}
@@ -214,10 +216,19 @@ def add_to_assets(source_path=None, uploaded_file=None, original_name=None, prov
     else:
         return None
 
+    _src_abs = ""
+    if source_path and os.path.exists(source_path):
+        _src_abs = os.path.normpath(os.path.abspath(source_path))
+
     # Check for duplicates by original filename + size
     for existing in catalog:
         if existing.get("original_name") == upload_original and existing.get("size") == len(data):
-            return existing  # already in library
+            if _src_abs:
+                prov = dict(existing.get("provenance") or {})
+                prov["gallery_source_path"] = _src_abs
+                existing["provenance"] = prov
+                save_asset_catalog(catalog)
+            return existing
 
     # Save file to assets/{subdir}/
     dest_dir = os.path.join(ASSETS_DIR, subdir)
@@ -249,8 +260,11 @@ def add_to_assets(source_path=None, uploaded_file=None, original_name=None, prov
         "uploaded_at": datetime.now().isoformat(),
         "project_id": st.session_state.get("active_project_id"),
     }
-    if provenance and isinstance(provenance, dict):
-        entry["provenance"] = provenance
+    prov: dict = dict(provenance) if isinstance(provenance, dict) else {}
+    if _src_abs:
+        prov["gallery_source_path"] = _src_abs
+    if prov:
+        entry["provenance"] = prov
     catalog.append(entry)
     save_asset_catalog(catalog)
     return entry
@@ -298,6 +312,7 @@ def scan_assets(filter_type="All"):
         return assets
 
     for root, dirs, files in os.walk(DOWNLOADS_DIR):
+        dirs[:] = [d for d in dirs if d not in GENERATED_RESERVED_DIRS]
         for fname in files:
             fpath = os.path.join(root, fname)
             ext = os.path.splitext(fname)[1].lower()
@@ -324,7 +339,7 @@ def scan_assets(filter_type="All"):
             if filter_type == "Audio" and ftype != "audio":
                 continue
 
-            # Get folder name (date or "uploads")
+            # Relative path under generated/ (e.g. My_Project/2026-06-04 or uploads)
             rel = os.path.relpath(root, DOWNLOADS_DIR)
             folder = rel if rel != "." else ""
 

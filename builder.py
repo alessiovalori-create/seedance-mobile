@@ -346,6 +346,14 @@ def _get_workflow_system_instruction(workflow_type, image_usage, num_vids, num_i
             "TO the closing frame. Do not re-describe the static content of either image; "
             "reference them and describe the evolution between them."
         )
+    if workflow_type == "Text to Video":
+        return (
+            "WORKFLOW: Text-to-Video (T2V). No reference assets. "
+            "Generate from text description only. "
+            "Describe the scene with maximum visual detail: "
+            "subject, environment, lighting, camera, style. "
+            "No @Image or @Video tags allowed in the output."
+        )
     if workflow_type == "Video Extension" and num_vids > 0:
         return (
             "You are a video editor. You must ONLY describe what happens in the new extension "

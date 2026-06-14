@@ -994,12 +994,15 @@ def render_references_page():
         elif val == "Editing":
             st.session_state.refs_nav = "References"
             st.session_state.active_page = "editing"
+        elif val == "LAB":
+            st.session_state.refs_nav = "References"
+            st.session_state.active_page = "lab"
 
     _refs_nav_col, _refs_proj_col = st.columns([4, 1])
     with _refs_nav_col:
         st.radio(
             "refs_nav_label",
-            ["Console", "Projects", "Gallery", "Assets", "References", "Storyboard", "Editing"],
+            ["Console", "Projects", "Gallery", "Assets", "References", "Storyboard", "Editing", "LAB"],
             horizontal=True,
             key="refs_nav",
             on_change=_on_refs_nav_change,

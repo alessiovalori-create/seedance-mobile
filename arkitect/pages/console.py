@@ -6,6 +6,7 @@ from datetime import datetime
 
 import streamlit as st
 
+from arkitect.clip_naming import clip_meta_json_path
 from arkitect.shared import CachedUploadedFile, AssetFile, _materialize_multi_file_upload
 from arkitect.storage import (
     add_to_assets,
@@ -22,11 +23,15 @@ from arkitect.console_state import (
     _save_console_param_snapshot,
     _save_project_console_settings,
     consume_assets_to_console_pending,
+    consume_assets_to_console_pending_seedream,
+    build_console_reference_tag_map,
 )
 from arkitect.media_server import _STATIC_SERVING_OK, _STATIC_SERVING_SUPPORTED
+from arkitect.ratings import set_rating_for_item
 from builder import build_prompt as build_video_prompt, analyze_cinematography, build_image_prompt
 from generator import (
     SEEDANCE_2_0_MODEL_ID,
+    SEEDANCE_2_0_FAST_MODEL_ID,
     SEEDREAM_5_0_LITE_MODEL_ID,
     generate_video,
     generate_seedream_image,
@@ -131,6 +136,17 @@ def render_shot_panel(shot_num, key_prefix="s"):
         data['m2_angle'] = data['m2_subj'] = None
     return data
 
+def _resolve_s2_seed_for_generate() -> str:
+    """Resolve seed for the next 2.0 generation (API accepts int or -1 for random)."""
+    manual = (st.session_state.get("s2_seed_manual") or "").strip()
+    if manual:
+        return manual
+    if st.session_state.get("s2_lock_seed"):
+        last = st.session_state.get("s2_last_seed")
+        if last is not None:
+            return str(last)
+    return str(random.randint(1, 2147483647))
+
 def _build_settings_json(model_sel, **kwargs):
     """Collect all UI parameters into a structured dict for JSON export."""
     settings = {
@@ -153,12 +169,9 @@ def _build_settings_json(model_sel, **kwargs):
             "resolution": kwargs.get("resolution", "1080p"),
             "aspect_ratio": kwargs.get("aspect_ratio", "16:9"),
             "duration_sec": kwargs.get("duration", 15),
-            "processing_mode": kwargs.get("gen_mode", "Standard (Online)"),
+            "speed": kwargs.get("speed", "Standard"),
         }
-        settings["creativity"] = {
-            "temperature": kwargs.get("temperature", 0.5),
-            "seeds": kwargs.get("seeds", []),
-        }
+        settings["seeds"] = kwargs.get("seeds", [])
         settings["files"] = {
             "images": kwargs.get("num_imgs", 0),
             "videos": kwargs.get("num_vids", 0),
@@ -192,6 +205,12 @@ def _build_settings_json(model_sel, **kwargs):
         settings["technical"] = {
             "resolution": kwargs.get("resolution", "2K"),
             "aspect_ratio": kwargs.get("aspect_ratio", "Smart"),
+            "optimize_prompt": kwargs.get("optimize", "None"),
+        }
+        settings["creativity"] = {
+            "num_variations": kwargs.get("num_variations", 1),
+            "variation_mode": kwargs.get("variation_mode", "Independent (per seed)"),
+            "seeds": kwargs.get("seeds", []),
             "optimize_prompt": kwargs.get("optimize", "None"),
         }
         settings["files"] = {
@@ -250,20 +269,23 @@ def render_console_page():
 
     # Apply Assets → Console transfer before any widgets (avoids session_state key conflicts)
     _applied_from_assets, _assets_msg = consume_assets_to_console_pending()
+    _applied_from_assets_sd, _assets_msg_sd = consume_assets_to_console_pending_seedream()
 
     model_sel = st.session_state.get("model_selector", "SEEDANCE 2.0")
     if _applied_from_assets:
         model_sel = "SEEDANCE 2.0"
+    elif _applied_from_assets_sd:
+        model_sel = "SEEDREAM 5.0"
+        st.toast(f"📷 Loaded {_assets_msg_sd}")
     total_files = num_imgs = num_vids = num_auds = 0
     action_desc = ""
     shots_data = []
     s2_workflow = "Standard Generation"
     image_usage = "auto"
     duration = 15
-    temperature = 0.5
+    s2_speed = "Standard"
     resolution = "1080p"
     aspect_ratio = "16:9"
-    gen_mode = "Standard (Online)"
     gen_audio = False
     audio_details_dict = {}
     s2_images = s2_videos = s2_audio = []
@@ -306,10 +328,12 @@ def render_console_page():
             "_persist_sd_assets_refs",
             "_console_was_away", "_console_just_restored",
             "s2_generation_error",
+            "assets_selected_ordered",
+            "s2_seed_manual", "s2_seed_mode",
         ):
             st.session_state.pop(k, None)
-        for i in range(10):
-            st.session_state.pop(f"seed_input_{i}", None)
+        for i in range(15):
+            st.session_state.pop(f"sd_seed_input_{i}", None)
         st.session_state["_console_param_snapshot"] = {}
         st.rerun()
 
@@ -320,6 +344,8 @@ def render_console_page():
             # Handle programmatic switch from Seedream → Seedance
             if st.session_state.pop("_switch_to_seedance", False):
                 _model_default_idx = 0  # SEEDANCE 2.0
+            elif st.session_state.pop("_switch_to_seedream", False):
+                _model_default_idx = 1  # SEEDREAM 5.0
             else:
                 _model_options = ["SEEDANCE 2.0", "SEEDREAM 5.0"]
                 _current = st.session_state.get("model_selector", "SEEDANCE 2.0")
@@ -342,7 +368,12 @@ def render_console_page():
                 elif is_first_frame:
                     s2_workflow = st.selectbox("Creation Workflow", ["Standard Generation"], key="s2_workflow_ff", disabled=True)
                 else:
-                    s2_workflow = st.selectbox("Creation Workflow", ["Standard Generation", "Video Extension", "Video Editing"], key="s2_workflow")
+                    s2_workflow = st.selectbox(
+                        "Creation Workflow",
+                        ["Text to Video", "Standard Generation",
+                         "Video Extension", "Video Editing"],
+                        key="s2_workflow",
+                    )
 
                 if is_first_last:
                     # ── First + Last Frame: two separate uploaders ──
@@ -507,184 +538,232 @@ def render_console_page():
                     total_files = num_imgs
                     image_usage = "first_frame"
                 else:
-                    # ── All-in-One Reference: original multi-file uploaders ──
-                    st.markdown(
-                        '<p style="color:#00E5CC; font-size:0.8rem; font-weight:600; letter-spacing:0.1em; '
-                        'margin:0.75rem 0 0.25rem; text-transform:uppercase;">References</p>',
-                        unsafe_allow_html=True,
-                    )
-                    _s2_img_raw = st.file_uploader(
-                        "Images (Max 9)",
-                        type=['png', 'jpg', 'jpeg'],
-                        accept_multiple_files=True,
-                        key="s2_images",
-                        help="PNG, JPG, JPEG",
-                    )
-                    if _s2_img_raw:
-                        _s2_img_list = [
-                            CachedUploadedFile(f.name, f.getvalue(), f.type)
-                            for f in _materialize_multi_file_upload(_s2_img_raw)
-                        ]
-                        st.session_state["_persisted_img_4"] = _s2_img_list
-                    elif "_persisted_img_4" in st.session_state:
-                        _s2_img_list = list(st.session_state["_persisted_img_4"])
-                    else:
-                        _s2_img_list = []
-                    if _s2_img_list:
-                        st.session_state["_cached_s2_images"] = [
-                            CachedUploadedFile(f.name, f.getvalue(), f.type) for f in _s2_img_list
-                        ]
-                        if "_s2_img_saved_names" not in st.session_state:
-                            st.session_state["_s2_img_saved_names"] = set()
-                        for f in _s2_img_list:
-                            if f.name not in st.session_state["_s2_img_saved_names"]:
-                                _result = add_to_assets(uploaded_file=f)
-                                if _result:
-                                    st.session_state["_s2_img_saved_names"].add(f.name)
-                    s2_images = _s2_img_list if _s2_img_list else list(st.session_state.get("_cached_s2_images") or [])
-                    if not _s2_img_list and s2_images:
-                        st.caption(f"Loaded from session: {', '.join(f.name for f in s2_images)}")
-                    # From Assets — images
-                    _cat = load_asset_catalog()
-                    _active_proj = get_active_project_id()
-                    if _active_proj:
-                        _cat = [a for a in _cat if a.get("project_id") == _active_proj]
-                    _img_assets = [a for a in _cat if a["type"] == "image"]
-                    if _img_assets:
-                        _img_opts = {f"{a['name']} ({a['size_str']})": a["id"] for a in _img_assets}
-                        _img_selected = st.multiselect(
-                            "From Assets (images)",
-                            options=list(_img_opts.keys()),
-                            default=[x for x in st.session_state.get("_persist_s2_assets_images", []) if x in _img_opts],
-                            key="s2_assets_images",
-                            label_visibility="collapsed",
-                            placeholder="＋ Pick images from Assets..."
+                    if s2_workflow == "Text to Video":
+                        st.caption(
+                            "Pure text generation — no reference images needed. "
+                            "Describe your scene in detail for best results."
                         )
-                        if _img_selected:
-                            st.session_state["_persist_s2_assets_images"] = _img_selected
-                        elif not _img_selected and "s2_assets_images" in st.session_state:
-                            st.session_state.pop("_persist_s2_assets_images", None)
+                        s2_images = []
+                        s2_videos = []
+                        s2_audio = []
+                        num_imgs = 0
+                        num_vids = 0
+                        num_auds = 0
+                        total_files = 0
+                    else:
+                        # ── All-in-One Reference: original multi-file uploaders ──
+                        st.markdown(
+                            '<p style="color:#00E5CC; font-size:0.8rem; font-weight:600; letter-spacing:0.1em; '
+                            'margin:0.75rem 0 0.25rem; text-transform:uppercase;">References</p>',
+                            unsafe_allow_html=True,
+                        )
+                        _s2_img_raw = st.file_uploader(
+                            "Images (Max 9)",
+                            type=['png', 'jpg', 'jpeg'],
+                            accept_multiple_files=True,
+                            key="s2_images",
+                            help="PNG, JPG, JPEG",
+                        )
+                        if _s2_img_raw:
+                            _s2_img_list = [
+                                CachedUploadedFile(f.name, f.getvalue(), f.type)
+                                for f in _materialize_multi_file_upload(_s2_img_raw)
+                            ]
+                            st.session_state["_persisted_img_4"] = _s2_img_list
+                        elif "_persisted_img_4" in st.session_state:
+                            _s2_img_list = list(st.session_state["_persisted_img_4"])
+                        else:
+                            _s2_img_list = []
+                        if _s2_img_list:
+                            st.session_state["_cached_s2_images"] = [
+                                CachedUploadedFile(f.name, f.getvalue(), f.type) for f in _s2_img_list
+                            ]
+                            if "_s2_img_saved_names" not in st.session_state:
+                                st.session_state["_s2_img_saved_names"] = set()
+                            for f in _s2_img_list:
+                                if f.name not in st.session_state["_s2_img_saved_names"]:
+                                    _result = add_to_assets(uploaded_file=f)
+                                    if _result:
+                                        st.session_state["_s2_img_saved_names"].add(f.name)
+                        # From Assets — images
+                        _cat = load_asset_catalog()
+                        _active_proj = get_active_project_id()
+                        if _active_proj:
+                            _cat = [a for a in _cat if a.get("project_id") == _active_proj]
+                        _img_assets = [a for a in _cat if a["type"] == "image"]
                         _img_asset_files = []
-                        for _lab in _img_selected:
-                            _aid = _img_opts[_lab]
-                            _a = next((x for x in _img_assets if x["id"] == _aid), None)
-                            if _a and os.path.exists(_a["path"]):
-                                _img_asset_files.append(AssetFile(_a["path"], _a["name"], _a["mime"]))
-                        s2_images = list(s2_images or []) + _img_asset_files
-                    _s2_vid_raw = st.file_uploader(
-                        "Videos (Max 3)",
-                        type=['mp4', 'mov', 'mpeg4'],
-                        accept_multiple_files=True,
-                        key="s2_videos",
-                        help="MP4, MOV, MPEG4",
-                    )
-                    if _s2_vid_raw:
-                        _s2_vid_list = [
-                            CachedUploadedFile(f.name, f.getvalue(), f.type)
-                            for f in _materialize_multi_file_upload(_s2_vid_raw)
-                        ]
-                        st.session_state["_persisted_vid_1"] = _s2_vid_list
-                    elif "_persisted_vid_1" in st.session_state:
-                        _s2_vid_list = list(st.session_state["_persisted_vid_1"])
-                    else:
-                        _s2_vid_list = []
-                    if _s2_vid_list:
-                        st.session_state["_cached_s2_videos"] = [
-                            CachedUploadedFile(f.name, f.getvalue(), f.type) for f in _s2_vid_list
-                        ]
-                        if "_s2_vid_saved_names" not in st.session_state:
-                            st.session_state["_s2_vid_saved_names"] = set()
-                        for f in _s2_vid_list:
-                            if f.name not in st.session_state["_s2_vid_saved_names"]:
-                                _result = add_to_assets(uploaded_file=f)
-                                if _result:
-                                    st.session_state["_s2_vid_saved_names"].add(f.name)
-                    s2_videos = _s2_vid_list if _s2_vid_list else list(st.session_state.get("_cached_s2_videos") or [])
-                    if not _s2_vid_list and s2_videos:
-                        st.caption(f"Loaded from session: {', '.join(f.name for f in s2_videos)}")
-                    # From Assets — videos
-                    _vid_assets = [a for a in _cat if a["type"] == "video"]
-                    if _vid_assets:
-                        _vid_opts = {f"{a['name']} ({a['size_str']})": a["id"] for a in _vid_assets}
-                        _vid_selected = st.multiselect(
-                            "From Assets (videos)",
-                            options=list(_vid_opts.keys()),
-                            default=[x for x in st.session_state.get("_persist_s2_assets_videos", []) if x in _vid_opts],
-                            key="s2_assets_videos",
-                            label_visibility="collapsed",
-                            placeholder="＋ Pick videos from Assets..."
+                        if _img_assets:
+                            _img_opts = {f"{a['name']} ({a['size_str']})": a["id"] for a in _img_assets}
+                            _img_selected = st.multiselect(
+                                "From Assets (images)",
+                                options=list(_img_opts.keys()),
+                                default=[x for x in st.session_state.get("_persist_s2_assets_images", []) if x in _img_opts],
+                                key="s2_assets_images",
+                                label_visibility="collapsed",
+                                placeholder="＋ Pick images from Assets..."
+                            )
+                            if _img_selected:
+                                st.session_state["_persist_s2_assets_images"] = _img_selected
+                            elif not _img_selected and "s2_assets_images" in st.session_state:
+                                st.session_state.pop("_persist_s2_assets_images", None)
+                            for _lab in _img_selected:
+                                _aid = _img_opts[_lab]
+                                _a = next((x for x in _img_assets if x["id"] == _aid), None)
+                                if _a and os.path.exists(_a["path"]):
+                                    _img_asset_files.append(AssetFile(_a["path"], _a["name"], _a["mime"]))
+                        if _s2_img_list or _img_asset_files:
+                            s2_images = list(_s2_img_list) + list(_img_asset_files)
+                            st.session_state["_cached_s2_images"] = s2_images
+                        else:
+                            s2_images = list(st.session_state.get("_cached_s2_images") or [])
+                        if s2_images and not _s2_img_list and not _img_asset_files:
+                            st.caption(f"Loaded from session: {', '.join(f.name for f in s2_images)}")
+                        _s2_vid_raw = st.file_uploader(
+                            "Videos (Max 3)",
+                            type=['mp4', 'mov', 'mpeg4'],
+                            accept_multiple_files=True,
+                            key="s2_videos",
+                            help="MP4, MOV, MPEG4",
                         )
-                        if _vid_selected:
-                            st.session_state["_persist_s2_assets_videos"] = _vid_selected
-                        elif not _vid_selected and "s2_assets_videos" in st.session_state:
-                            st.session_state.pop("_persist_s2_assets_videos", None)
+                        if _s2_vid_raw:
+                            _s2_vid_list = [
+                                CachedUploadedFile(f.name, f.getvalue(), f.type)
+                                for f in _materialize_multi_file_upload(_s2_vid_raw)
+                            ]
+                            st.session_state["_persisted_vid_1"] = _s2_vid_list
+                        elif "_persisted_vid_1" in st.session_state:
+                            _s2_vid_list = list(st.session_state["_persisted_vid_1"])
+                        else:
+                            _s2_vid_list = []
+                        if _s2_vid_list:
+                            st.session_state["_cached_s2_videos"] = [
+                                CachedUploadedFile(f.name, f.getvalue(), f.type) for f in _s2_vid_list
+                            ]
+                            if "_s2_vid_saved_names" not in st.session_state:
+                                st.session_state["_s2_vid_saved_names"] = set()
+                            for f in _s2_vid_list:
+                                if f.name not in st.session_state["_s2_vid_saved_names"]:
+                                    _result = add_to_assets(uploaded_file=f)
+                                    if _result:
+                                        st.session_state["_s2_vid_saved_names"].add(f.name)
+                        # From Assets — videos
+                        _vid_assets = [a for a in _cat if a["type"] == "video"]
                         _vid_asset_files = []
-                        for _lab in _vid_selected:
-                            _aid = _vid_opts[_lab]
-                            _a = next((x for x in _vid_assets if x["id"] == _aid), None)
-                            if _a and os.path.exists(_a["path"]):
-                                _vid_asset_files.append(AssetFile(_a["path"], _a["name"], _a["mime"]))
-                        s2_videos = list(s2_videos or []) + _vid_asset_files
-                    _s2_aud_raw = st.file_uploader(
-                        "Audio (Max 3)",
-                        type=['mp3'],
-                        accept_multiple_files=True,
-                        key="s2_audio",
-                        help="MP3",
-                    )
-                    if _s2_aud_raw:
-                        _s2_aud_list = [
-                            CachedUploadedFile(f.name, f.getvalue(), f.type)
-                            for f in _materialize_multi_file_upload(_s2_aud_raw)
-                        ]
-                        st.session_state["_persisted_aud_1"] = _s2_aud_list
-                    elif "_persisted_aud_1" in st.session_state:
-                        _s2_aud_list = list(st.session_state["_persisted_aud_1"])
-                    else:
-                        _s2_aud_list = []
-                    if _s2_aud_list:
-                        st.session_state["_cached_s2_audio"] = [
-                            CachedUploadedFile(f.name, f.getvalue(), f.type) for f in _s2_aud_list
-                        ]
-                        if "_s2_aud_saved_names" not in st.session_state:
-                            st.session_state["_s2_aud_saved_names"] = set()
-                        for f in _s2_aud_list:
-                            if f.name not in st.session_state["_s2_aud_saved_names"]:
-                                _result = add_to_assets(uploaded_file=f)
-                                if _result:
-                                    st.session_state["_s2_aud_saved_names"].add(f.name)
-                    s2_audio = _s2_aud_list if _s2_aud_list else list(st.session_state.get("_cached_s2_audio") or [])
-                    if not _s2_aud_list and s2_audio:
-                        st.caption(f"Loaded from session: {', '.join(f.name for f in s2_audio)}")
-                    # From Assets — audio
-                    _aud_assets = [a for a in _cat if a["type"] == "audio"]
-                    if _aud_assets:
-                        _aud_opts = {f"{a['name']} ({a['size_str']})": a["id"] for a in _aud_assets}
-                        _aud_selected = st.multiselect(
-                            "From Assets (audio)",
-                            options=list(_aud_opts.keys()),
-                            default=[x for x in st.session_state.get("_persist_s2_assets_audio", []) if x in _aud_opts],
-                            key="s2_assets_audio",
-                            label_visibility="collapsed",
-                            placeholder="＋ Pick audio from Assets..."
+                        if _vid_assets:
+                            _vid_opts = {f"{a['name']} ({a['size_str']})": a["id"] for a in _vid_assets}
+                            _vid_selected = st.multiselect(
+                                "From Assets (videos)",
+                                options=list(_vid_opts.keys()),
+                                default=[x for x in st.session_state.get("_persist_s2_assets_videos", []) if x in _vid_opts],
+                                key="s2_assets_videos",
+                                label_visibility="collapsed",
+                                placeholder="＋ Pick videos from Assets..."
+                            )
+                            if _vid_selected:
+                                st.session_state["_persist_s2_assets_videos"] = _vid_selected
+                            elif not _vid_selected and "s2_assets_videos" in st.session_state:
+                                st.session_state.pop("_persist_s2_assets_videos", None)
+                            for _lab in _vid_selected:
+                                _aid = _vid_opts[_lab]
+                                _a = next((x for x in _vid_assets if x["id"] == _aid), None)
+                                if _a and os.path.exists(_a["path"]):
+                                    _vid_asset_files.append(AssetFile(_a["path"], _a["name"], _a["mime"]))
+                        if _s2_vid_list or _vid_asset_files:
+                            s2_videos = list(_s2_vid_list) + list(_vid_asset_files)
+                            st.session_state["_cached_s2_videos"] = s2_videos
+                        else:
+                            s2_videos = list(st.session_state.get("_cached_s2_videos") or [])
+                        if s2_videos and not _s2_vid_list and not _vid_asset_files:
+                            st.caption(f"Loaded from session: {', '.join(f.name for f in s2_videos)}")
+                        _s2_aud_raw = st.file_uploader(
+                            "Audio (Max 3)",
+                            type=['mp3'],
+                            accept_multiple_files=True,
+                            key="s2_audio",
+                            help="MP3",
                         )
-                        if _aud_selected:
-                            st.session_state["_persist_s2_assets_audio"] = _aud_selected
-                        elif not _aud_selected and "s2_assets_audio" in st.session_state:
-                            st.session_state.pop("_persist_s2_assets_audio", None)
+                        if _s2_aud_raw:
+                            _s2_aud_list = [
+                                CachedUploadedFile(f.name, f.getvalue(), f.type)
+                                for f in _materialize_multi_file_upload(_s2_aud_raw)
+                            ]
+                            st.session_state["_persisted_aud_1"] = _s2_aud_list
+                        elif "_persisted_aud_1" in st.session_state:
+                            _s2_aud_list = list(st.session_state["_persisted_aud_1"])
+                        else:
+                            _s2_aud_list = []
+                        if _s2_aud_list:
+                            st.session_state["_cached_s2_audio"] = [
+                                CachedUploadedFile(f.name, f.getvalue(), f.type) for f in _s2_aud_list
+                            ]
+                            if "_s2_aud_saved_names" not in st.session_state:
+                                st.session_state["_s2_aud_saved_names"] = set()
+                            for f in _s2_aud_list:
+                                if f.name not in st.session_state["_s2_aud_saved_names"]:
+                                    _result = add_to_assets(uploaded_file=f)
+                                    if _result:
+                                        st.session_state["_s2_aud_saved_names"].add(f.name)
+                        # From Assets — audio
+                        _aud_assets = [a for a in _cat if a["type"] == "audio"]
                         _aud_asset_files = []
-                        for _lab in _aud_selected:
-                            _aid = _aud_opts[_lab]
-                            _a = next((x for x in _aud_assets if x["id"] == _aid), None)
-                            if _a and os.path.exists(_a["path"]):
-                                _aud_asset_files.append(AssetFile(_a["path"], _a["name"], _a["mime"]))
-                        s2_audio = list(s2_audio or []) + _aud_asset_files
+                        if _aud_assets:
+                            _aud_opts = {f"{a['name']} ({a['size_str']})": a["id"] for a in _aud_assets}
+                            _aud_selected = st.multiselect(
+                                "From Assets (audio)",
+                                options=list(_aud_opts.keys()),
+                                default=[x for x in st.session_state.get("_persist_s2_assets_audio", []) if x in _aud_opts],
+                                key="s2_assets_audio",
+                                label_visibility="collapsed",
+                                placeholder="＋ Pick audio from Assets..."
+                            )
+                            if _aud_selected:
+                                st.session_state["_persist_s2_assets_audio"] = _aud_selected
+                            elif not _aud_selected and "s2_assets_audio" in st.session_state:
+                                st.session_state.pop("_persist_s2_assets_audio", None)
+                            for _lab in _aud_selected:
+                                _aid = _aud_opts[_lab]
+                                _a = next((x for x in _aud_assets if x["id"] == _aid), None)
+                                if _a and os.path.exists(_a["path"]):
+                                    _aud_asset_files.append(AssetFile(_a["path"], _a["name"], _a["mime"]))
+                        if _s2_aud_list or _aud_asset_files:
+                            s2_audio = list(_s2_aud_list) + list(_aud_asset_files)
+                            st.session_state["_cached_s2_audio"] = s2_audio
+                        else:
+                            s2_audio = list(st.session_state.get("_cached_s2_audio") or [])
+                        if s2_audio and not _s2_aud_list and not _aud_asset_files:
+                            st.caption(f"Loaded from session: {', '.join(f.name for f in s2_audio)}")
+                        num_imgs = len(s2_images) if s2_images else 0
+                        num_vids = len(s2_videos) if s2_videos else 0
+                        num_auds = len(s2_audio) if s2_audio else 0
+                        total_files = num_imgs + num_vids + num_auds
+
+                # Safety net: all-in-one only — if uploads are empty on rerun, restore from session cache
+                if (
+                    not is_first_last
+                    and not is_first_frame
+                    and st.session_state.get("s2_workflow") != "Text to Video"
+                ):
+                    _seedream_ref = st.session_state.pop("_seedream_to_seedance_ref", None)
+                    if _seedream_ref is not None:
+                        s2_images = [_seedream_ref]
+                        st.session_state["_cached_s2_images"] = [_seedream_ref]
+                    if not s2_videos and st.session_state.get("_cached_s2_videos"):
+                        s2_videos = list(st.session_state.get("_cached_s2_videos"))
+                    if not s2_images and st.session_state.get("_cached_s2_images"):
+                        s2_images = list(st.session_state.get("_cached_s2_images"))
+                    if not s2_audio and st.session_state.get("_cached_s2_audio"):
+                        s2_audio = list(st.session_state.get("_cached_s2_audio"))
                     num_imgs = len(s2_images) if s2_images else 0
                     num_vids = len(s2_videos) if s2_videos else 0
                     num_auds = len(s2_audio) if s2_audio else 0
                     total_files = num_imgs + num_vids + num_auds
 
-                    # Image usage selectbox: only show for All-in-One when images present
+                # Image usage — after cache safety net so num_imgs reflects loaded references
+                if (
+                    not is_first_last
+                    and not is_first_frame
+                    and st.session_state.get("s2_workflow") != "Text to Video"
+                ):
                     if num_imgs > 0 and "Video Extension" not in st.session_state.get("s2_workflow", ""):
                         image_usage = st.selectbox(
                             "Image usage",
@@ -706,23 +785,6 @@ def render_console_page():
                             "(not locked as first frame), per Seedance API rules."
                         )
 
-                # Safety net: all-in-one only — if uploads are empty on rerun, restore from session cache
-                if not is_first_last and not is_first_frame:
-                    _seedream_ref = st.session_state.pop("_seedream_to_seedance_ref", None)
-                    if _seedream_ref is not None:
-                        s2_images = [_seedream_ref]
-                        st.session_state["_cached_s2_images"] = [_seedream_ref]
-                    if not s2_videos and st.session_state.get("_cached_s2_videos"):
-                        s2_videos = list(st.session_state.get("_cached_s2_videos"))
-                    if not s2_images and st.session_state.get("_cached_s2_images"):
-                        s2_images = list(st.session_state.get("_cached_s2_images"))
-                    if not s2_audio and st.session_state.get("_cached_s2_audio"):
-                        s2_audio = list(st.session_state.get("_cached_s2_audio"))
-                    num_imgs = len(s2_images) if s2_images else 0
-                    num_vids = len(s2_videos) if s2_videos else 0
-                    num_auds = len(s2_audio) if s2_audio else 0
-                    total_files = num_imgs + num_vids + num_auds
-
                 # ── Asset tags info (after uploaders + From Assets) ──
                 if total_files > 0:
                     tag_list = [f"@Image {i+1}" for i in range(num_imgs)] + [f"@Video {i+1}" for i in range(num_vids)] + [f"@Audio {i+1}" for i in range(num_auds)]
@@ -743,21 +805,13 @@ def render_console_page():
                         st.warning(f"Seedance 2.0 limit exceeded: max 3 videos (current: {num_vids}).")
                     if num_auds > 3:
                         st.warning(f"Seedance 2.0 limit exceeded: max 3 audio files (current: {num_auds}).")
-                _ref_tag_map = {}
-                if total_files > 0:
-                    for _i, _f in enumerate(s2_images or []):
-                        _n = getattr(_f, "name", "") or ""
-                        if _n:
-                            _ref_tag_map[_n] = f"@Image {_i + 1}"
-                    for _i, _f in enumerate(s2_videos or []):
-                        _n = getattr(_f, "name", "") or ""
-                        if _n:
-                            _ref_tag_map[_n] = f"@Video {_i + 1}"
-                    for _i, _f in enumerate(s2_audio or []):
-                        _n = getattr(_f, "name", "") or ""
-                        if _n:
-                            _ref_tag_map[_n] = f"@Audio {_i + 1}"
-                st.session_state["_console_ref_tag_map"] = _ref_tag_map
+                _ref_cat = load_asset_catalog()
+                _ref_proj = get_active_project_id()
+                if _ref_proj:
+                    _ref_cat = [a for a in _ref_cat if a.get("project_id") == _ref_proj]
+                st.session_state["_console_ref_tag_map"] = (
+                    build_console_reference_tag_map(_ref_cat) if total_files > 0 else {}
+                )
 
                 if num_imgs > 0:
                     btn_cols = st.columns(min(num_imgs, 4))
@@ -807,14 +861,12 @@ def render_console_page():
                             _result = add_to_assets(uploaded_file=f)
                             if _result:
                                 st.session_state["_sd_ref_saved_names"].add(f.name)
-                sd_refs = _sd_refs_list if _sd_refs_list else list(st.session_state.get("_cached_sd_refs") or [])
-                if not _sd_refs_list and sd_refs:
-                    st.caption(f"Loaded from session: {', '.join(f.name for f in sd_refs)}")
                 _cat = load_asset_catalog()
                 _active_proj = get_active_project_id()
                 if _active_proj:
                     _cat = [a for a in _cat if a.get("project_id") == _active_proj]
                 _img_assets = [a for a in _cat if a["type"] == "image"]
+                _sd_af = []
                 if _img_assets:
                     _sd_opts = {f"{a['name']} ({a['size_str']})": a["id"] for a in _img_assets}
                     _sd_sel = st.multiselect("From Assets", options=list(_sd_opts.keys()),
@@ -825,24 +877,25 @@ def render_console_page():
                         st.session_state["_persist_sd_assets_refs"] = _sd_sel
                     elif not _sd_sel and "sd_assets_refs" in st.session_state:
                         st.session_state.pop("_persist_sd_assets_refs", None)
-                    _sd_af = []
                     for _lab in _sd_sel:
                         _aid = _sd_opts[_lab]
                         _a = next((x for x in _img_assets if x["id"] == _aid), None)
                         if _a and os.path.exists(_a["path"]):
                             _sd_af.append(AssetFile(_a["path"], _a["name"], _a["mime"]))
-                    sd_refs = list(sd_refs or []) + _sd_af
+                if _sd_refs_list or _sd_af:
+                    sd_refs = list(_sd_refs_list) + list(_sd_af)
+                    st.session_state["_cached_sd_refs"] = sd_refs
+                else:
+                    sd_refs = list(st.session_state.get("_cached_sd_refs") or [])
+                if sd_refs and not _sd_refs_list and not _sd_af:
+                    st.caption(f"Loaded from session: {', '.join(f.name for f in sd_refs)}")
                 sd_style = st.selectbox("Visual Style Preset", ["None (Raw Prompt)", "Cinematic: Kodak Portra 400 (Nostalgic)", "Design: Guochao Neo-Chinese (Red & Gold)", "Artistic: Chinese Origami Figures", "Artistic: Transparent Ice Sculptures", "Design: 2D Pixel Art (Top-Down)", "Design: Abstract Futuristic (Liquid Silver)", "Artistic: Monet Impressionism (Thick Oil)", "Education: Hand-drawn Infographic"], key="sd_style_select", label_visibility="collapsed")
                 # ── Reference tag info (after uploaders + From Assets) ──
                 if sd_refs:
                     st.info(f"Attached {len(sd_refs)} reference image(s).")
-                _sd_ref_tag_map = {}
-                if sd_refs:
-                    for _i, _f in enumerate(sd_refs):
-                        _n = getattr(_f, "name", "") or ""
-                        if _n:
-                            _sd_ref_tag_map[_n] = f"@Image {_i + 1}"
-                st.session_state["_console_ref_tag_map"] = _sd_ref_tag_map
+                st.session_state["_console_ref_tag_map"] = (
+                    build_console_reference_tag_map(_cat) if sd_refs else {}
+                )
 
         if st.button("PROJECTS", key="top_projects_btn", use_container_width=True):
             _save_console_param_snapshot()
@@ -894,6 +947,7 @@ def render_console_page():
                         shots_data.append(render_shot_panel(3, key_prefix="s"))
 
                 # Auto-sync Duration slider to max shot end time
+                _duration_synced_now = False
                 if shots_data:
                     _max_shot_end = 0
                     for _shot in shots_data:
@@ -903,8 +957,13 @@ def render_console_page():
                     if _max_shot_end >= 4:
                         # Clamp to valid range [4, 15]
                         _max_shot_end = min(max(_max_shot_end, 4), 15)
-                        if st.session_state.get('common_duration') != _max_shot_end:
+                        _prev_duration = st.session_state.get('common_duration')
+                        if _prev_duration != _max_shot_end:
                             st.session_state['common_duration'] = _max_shot_end
+                            st.session_state["_duration_auto_synced"] = {"from": _prev_duration, "to": _max_shot_end}
+                            _duration_synced_now = True
+                if not _duration_synced_now:
+                    st.session_state.pop("_duration_auto_synced", None)
             else:
                 with st.expander("Shot type", expanded=False):
                     sd_shot_type = st.selectbox("Shot Type", LIST_SHOT_TYPES, key="sd_shot_type")
@@ -1138,30 +1197,109 @@ def render_console_page():
     with right_col:
         with st.expander("TECHNICAL", expanded=False):
             if model_sel == "SEEDANCE 2.0":
-                if st.session_state.get("video_resolution") not in ("1080p", "720p", "480p"):
+                if st.session_state.get("video_resolution") not in ("480p", "720p", "1080p"):
                     st.session_state["video_resolution"] = "1080p"
                 if st.session_state.get("video_aspect_ratio") not in ("16:9", "9:16", "4:3", "3:4", "21:9", "1:1", "adaptive"):
                     st.session_state["video_aspect_ratio"] = "adaptive"
-                resolution = st.selectbox("Resolution", ["1080p", "720p", "480p"], key="video_resolution")
+                resolution = st.selectbox("Quality", ["480p", "720p", "1080p"], key="video_resolution")
                 aspect_ratio = st.selectbox("Aspect Ratio", ["16:9", "9:16", "4:3", "3:4", "21:9", "1:1", "adaptive"], key="video_aspect_ratio")
                 _duration_slider = st.slider("Duration (s)", min_value=4, max_value=15, step=1, key="common_duration")
+                _sync_info = st.session_state.get("_duration_auto_synced")
+                if _sync_info:
+                    _from = _sync_info.get("from")
+                    _to = _sync_info.get("to")
+                    if _from is None:
+                        st.caption(f"⏱ Duration auto-set to {_to}s to fit shot timeline")
+                    else:
+                        st.caption(f"⏱ Duration auto-adjusted from {_from}s to {_to}s to fit shot timeline")
                 _smart_duration = st.checkbox("Smart Duration (-1)", key="s2_smart_duration")
                 duration = -1 if _smart_duration else _duration_slider
-                gen_mode = st.radio("Processing Mode", ["Standard (Online)", "Draft Mode (Preview)", "Offline (50% Cost)"], horizontal=True, key="s2_gen_mode")
+                s2_speed = st.selectbox(
+                    "Speed",
+                    ["Standard", "Fast"],
+                    key="s2_speed_mode",
+                    help="Standard: full-quality model. Fast: accelerated model.",
+                )
                 st.checkbox("Watermark", key="s2_watermark")
             else:
                 sd_resolution = st.selectbox("Resolution", ["3K", "2K"], key="sd_resolution")
                 sd_ar = st.selectbox("Aspect Ratio", ["Smart", "1:1", "3:4", "4:3", "16:9", "9:16", "2:3", "3:2", "21:9"], key="sd_ar_select")
 
-        with st.expander("SEEDS & CREATIVITY", expanded=False):
+        with st.expander("SEEDS", expanded=False):
             if model_sel == "SEEDANCE 2.0":
-                temperature = st.number_input("Creativity", min_value=0.0, max_value=1.5, step=0.1, key="common_temperature")
-                num_variations = st.number_input("Variations", min_value=1, max_value=5, step=1, key="common_num_variations")
-                cols = st.columns(min(num_variations, 5))
-                for i in range(num_variations):
-                    with cols[i % 5]: st.text_input(f"Seed {i+1}", key=f"seed_input_{i}")
+                _seed_mode = st.radio(
+                    "Seed",
+                    ["🎲 New variation", "🔒 Lock take"],
+                    horizontal=True,
+                    key="s2_seed_mode",
+                )
+                st.session_state["s2_lock_seed"] = (_seed_mode == "🔒 Lock take")
+                if st.session_state.get("s2_lock_seed"):
+                    _ls = st.session_state.get("s2_last_seed")
+                    if _ls is not None:
+                        st.caption(f"Locked seed: {_ls}")
+                    else:
+                        st.caption("Nessun take precedente — la prima generazione userà un seed nuovo.")
+                with st.expander("Seed avanzato", expanded=False):
+                    st.text_input(
+                        "Seed manuale",
+                        key="s2_seed_manual",
+                        placeholder="Vuoto = usa modalità sopra. Range 0–2147483647.",
+                        help="Override esplicito; ha priorità su New variation / Lock take.",
+                    )
             else:
-                sd_optimize = st.selectbox("Optimize prompt", ["None", "standard", "fast"], key="sd_optimize")
+                sd_optimize = st.selectbox(
+                    "Optimize prompt",
+                    ["None", "standard", "fast"],
+                    key="sd_optimize",
+                    help="API-side prompt refinement (standard = higher quality, fast = quicker).",
+                )
+                _sd_ref_n = len(sd_refs) if sd_refs else 0
+                _sd_max_var = max(1, min(15, 15 - _sd_ref_n))
+                if st.session_state.get("sd_num_variations", 1) > _sd_max_var:
+                    st.session_state["sd_num_variations"] = _sd_max_var
+                sd_num_variations = st.number_input(
+                    "Variations",
+                    min_value=1,
+                    max_value=_sd_max_var,
+                    step=1,
+                    key="sd_num_variations",
+                    help=(
+                        f"Number of images to generate. "
+                        f"Reference images ({_sd_ref_n}) + variations must be ≤ 15."
+                    ),
+                )
+                _sd_var_n = int(st.session_state.get("sd_num_variations", 1))
+                if _sd_var_n > 1:
+                    sd_variation_mode = st.radio(
+                        "Variation mode",
+                        ["Independent (per seed)", "Coherent series (1 batch)"],
+                        key="sd_variation_mode",
+                        horizontal=False,
+                        help=(
+                            "Independent: one API call per variation (each with its own seed). "
+                            "Coherent series: one batch call — images share a coherent style/sequence."
+                        ),
+                    )
+                else:
+                    sd_variation_mode = st.session_state.get(
+                        "sd_variation_mode", "Independent (per seed)"
+                    )
+                _sd_seed_cols = st.columns(min(_sd_var_n, 5))
+                for _si in range(_sd_var_n):
+                    with _sd_seed_cols[_si % 5]:
+                        st.text_input(
+                            f"Seed {_si + 1}",
+                            key=f"sd_seed_input_{_si}",
+                            placeholder="Random",
+                            help="Leave empty for random. Range: 0–2147483647.",
+                        )
+                if st.button("↻ Randomize seeds", key="sd_randomize_seeds_btn", use_container_width=True):
+                    for _si in range(_sd_var_n):
+                        st.session_state[f"sd_seed_input_{_si}"] = str(
+                            random.randint(0, 2147483647)
+                        )
+                    st.rerun()
 
         with st.expander("AUDIO & LIP-SYNC", expanded=False):
             if model_sel == "SEEDANCE 2.0":
@@ -1204,10 +1342,16 @@ def render_console_page():
             st.session_state["_console_was_away"] = True
             st.session_state.active_page = "editing"
             st.rerun()
+        if st.button("LAB", key="top_lab_btn", use_container_width=True):
+            _save_console_param_snapshot()
+            _save_project_console_settings()
+            st.session_state["_console_was_away"] = True
+            st.session_state.active_page = "lab"
+            st.rerun()
 
     if json_clicked:
         if model_sel == "SEEDANCE 2.0":
-            _seeds = [st.session_state.get(f"seed_input_{i}", "") for i in range(st.session_state.get("common_num_variations", 1))]
+            _seeds = [_resolve_s2_seed_for_generate()]
             _json = _build_settings_json(
                 model_sel,
                 action_desc=action_desc,
@@ -1217,8 +1361,7 @@ def render_console_page():
                 resolution=resolution,
                 aspect_ratio=aspect_ratio,
                 duration=duration,
-                gen_mode=gen_mode,
-                temperature=temperature,
+                speed=s2_speed,
                 seeds=_seeds,
                 num_imgs=num_imgs,
                 num_vids=num_vids,
@@ -1229,6 +1372,11 @@ def render_console_page():
                 shots_data=shots_data,
             )
         else:
+            _sd_var_n_json = int(st.session_state.get("sd_num_variations", 1))
+            _sd_seeds_json = [
+                st.session_state.get(f"sd_seed_input_{i}", "")
+                for i in range(_sd_var_n_json)
+            ]
             _json = _build_settings_json(
                 model_sel,
                 prompt=sd_prompt,
@@ -1246,6 +1394,9 @@ def render_console_page():
                 resolution=sd_resolution,
                 aspect_ratio=sd_ar,
                 optimize=st.session_state.get("sd_optimize", "None"),
+                num_variations=_sd_var_n_json,
+                variation_mode=st.session_state.get("sd_variation_mode", "Independent (per seed)"),
+                seeds=_sd_seeds_json,
                 num_refs=len(sd_refs) if sd_refs else 0,
             )
         st.session_state.json_preview = json.dumps(_json, indent=2, ensure_ascii=False)
@@ -1290,17 +1441,23 @@ def render_console_page():
                 unsafe_allow_html=True,
             )
         else:
+            _sd_var_cost = int(st.session_state.get("sd_num_variations", 1))
             _est_cost = estimate_cost(
                 SEEDREAM_5_0_LITE_MODEL_ID, sd_resolution,
-            )
+            ) * max(1, _sd_var_cost)
         if model_sel != "SEEDANCE 2.0":
+            _sd_cost_lbl = format_cost_str(_est_cost)
+            _sd_var_lbl = int(st.session_state.get("sd_num_variations", 1))
+            _sd_cost_note = (
+                f" × {_sd_var_lbl} variations" if _sd_var_lbl > 1 else ""
+            )
             st.markdown(
                 f'<p style="color:#FFEB3B;-webkit-text-fill-color:#FFEB3B;'
                 f'font-size:0.85rem;font-weight:700;font-family:Open Sans,sans-serif;'
                 f'margin:4px 0 0;padding:6px 10px;'
                 f'background:rgba(255,235,59,0.08);border-radius:4px;'
                 f'border-left:3px solid #FFEB3B;">'
-                f'Estimated cost: {format_cost_str(_est_cost)}</p>',
+                f'Estimated cost: {_sd_cost_lbl}{_sd_cost_note}</p>',
                 unsafe_allow_html=True,
             )
 
@@ -1320,7 +1477,7 @@ def render_console_page():
                     builder_args = {
                         "scene_description": action_desc, "workflow_type": s2_workflow,
                         "num_imgs": num_imgs, "num_vids": num_vids, "num_auds": num_auds,
-                        "duration": duration, "temperature": temperature, "shots_data": shots_data,
+                        "duration": duration, "shots_data": shots_data,
                         "vision_context": st.session_state.get('vision_context', None),
                         "audio_sync": audio_details_dict if gen_audio else None, "image_usage": image_usage,
                         "enforce_stability": st.session_state.get("enforce_stability", False),
@@ -1365,18 +1522,25 @@ def render_console_page():
                     print(f"[DEBUG-IMG-{_i}] type={_type}, has_getvalue={_has_getval}, has_name={_has_name}, value={str(_img)[:80] if not _has_getval else 'file_obj'}")
             with st.spinner("Generating Seedance 2.0... please wait 3-5 minutes"):
                 print(f"[DEBUG-PRE-GENERATE] About to call generate_video, images type: {type(s2_images)}, first image type: {type(s2_images[0]) if s2_images else 'none'}")
+                _s2_seed_used = _resolve_s2_seed_for_generate()
+                _s2_model_id = (
+                    SEEDANCE_2_0_FAST_MODEL_ID
+                    if st.session_state.get("s2_speed_mode", "Standard") == "Fast"
+                    else SEEDANCE_2_0_MODEL_ID
+                )
                 try:
                     result = generate_video(
                         prompt_text=chosen_prompt, scene_description=(action_desc or "")[:20],
+                        full_scene_description=(action_desc or "").strip(),
                         images=s2_images, videos=s2_videos, audios=s2_audio,
                         image_usage=image_usage,
-                        seed=st.session_state.get('seed_input_0', "-1"),
+                        seed=_s2_seed_used,
                         resolution=resolution, aspect_ratio=aspect_ratio, duration=duration,
                         generate_audio=(gen_audio or st.session_state.get("s2_audio_output", False)),
                         audio_details=audio_details_dict,
-                        is_draft=(gen_mode == "Draft Mode (Preview)"), is_offline=(gen_mode == "Offline (50% Cost)"),
                         watermark=st.session_state.get("s2_watermark", False),
-                        model_id=SEEDANCE_2_0_MODEL_ID, shots_data=shots_data,
+                        model_id=_s2_model_id, shots_data=shots_data,
+                        project_name=get_active_project_name(),
                     )
                     print(f"[DEBUG-POST-GENERATE] result type={type(result).__name__}, value={str(result)[:200]}")
                 except Exception as e:
@@ -1387,21 +1551,115 @@ def render_console_page():
                 if isinstance(result, dict) and result.get("video"):
                     st.session_state.pop("s2_generation_error", None)
                     st.session_state.s2_last_result = result
+                    try:
+                        st.session_state["s2_last_seed"] = int(_s2_seed_used)
+                    except (ValueError, TypeError):
+                        pass
                     _s2_est_cost = estimate_cost(
-                        SEEDANCE_2_0_MODEL_ID,
+                        _s2_model_id,
                         resolution,
                         duration,
                         gen_audio,
-                        is_draft=(gen_mode == "Draft Mode (Preview)"),
-                        is_offline=(gen_mode == "Offline (50% Cost)"),
                         has_video_input=((num_vids or 0) > 0),
                     )
                     _actual_duration = result.get("duration") or result.get("actual_duration") or result.get("video_duration")
                     _duration_for_gallery = _actual_duration if _actual_duration is not None else duration
-                    st.session_state.gallery_videos.append({"url": result["video"], "caption": (action_desc or "Seedance 2.0")[:50], "prompt": chosen_prompt, "resolution": resolution, "duration": _duration_for_gallery, "aspect_ratio": aspect_ratio, "video_path": result.get("video_path"), "last_frame_path": result.get("last_frame_path"), "model": "Seedance 2.0", "created_at": datetime.now().isoformat(), "project_id": st.session_state.get("active_project_id"), "estimated_cost": _s2_est_cost})
+
+                    _seeds_payload = [_s2_seed_used] if _s2_seed_used else []
+
+                    _audio_payload = {}
+                    if gen_audio:
+                        _audio_payload = {
+                            "language": st.session_state.get("v_lang", ""),
+                            "emotion": st.session_state.get("v_emo", ""),
+                            "timbre": st.session_state.get("v_timbre", ""),
+                            "pace": st.session_state.get("v_pace", ""),
+                            "dialogue": st.session_state.get("s2_dialogue", ""),
+                            "sfx": st.session_state.get("s2_sfx", ""),
+                        }
+
+                    _ref_labels = []
+                    _s2_entry = st.session_state.get("s2_entry_point", "")
+                    if _s2_entry == "First Frame":
+                        _fo_lab = st.session_state.get("_persist_s2_assets_first_only")
+                        if _fo_lab:
+                            _ref_labels.append(_fo_lab)
+                    elif _s2_entry == "First and Last Frames":
+                        for _pk in ("_persist_s2_assets_first_frame", "_persist_s2_assets_last_frame"):
+                            _plab = st.session_state.get(_pk)
+                            if _plab:
+                                _ref_labels.append(_plab)
+                    else:
+                        for _pk in (
+                            "_persist_s2_assets_images",
+                            "_persist_s2_assets_videos",
+                            "_persist_s2_assets_audio",
+                        ):
+                            _plabs = st.session_state.get(_pk)
+                            if isinstance(_plabs, list):
+                                _ref_labels.extend(_plabs)
+                            elif _plabs:
+                                _ref_labels.append(_plabs)
+
+                    _ref_catalog = load_asset_catalog()
+                    _ref_proj = get_active_project_id()
+                    if _ref_proj:
+                        _ref_catalog = [a for a in _ref_catalog if a.get("project_id") == _ref_proj]
+                    _ref_label_to_id = {
+                        f"{a['name']} ({a.get('size_str', '')})": a["id"]
+                        for a in _ref_catalog
+                        if a.get("id")
+                    }
+                    _ref_asset_ids = [
+                        _ref_label_to_id[lab] for lab in _ref_labels if lab in _ref_label_to_id
+                    ]
+
+                    _gallery_shots = []
+                    for _shot in (shots_data or []):
+                        _gs = dict(_shot)
+                        _cp = _gs.get("color_palette")
+                        if _cp and isinstance(_cp, list) and isinstance(_cp[0], tuple):
+                            _gs["color_palette"] = [{"hex": h, "target": t} for h, t in _cp]
+                        _gallery_shots.append(_gs)
+
+                    _sidecar_path = ""
+                    if result.get("video_path"):
+                        _sidecar_path = clip_meta_json_path(result["video_path"])
+
+                    _gv_entry = {
+                        "url": result["video"],
+                        "caption": (action_desc or "Seedance 2.0")[:50],
+                        "prompt": chosen_prompt,
+                        "resolution": resolution,
+                        "duration": _duration_for_gallery,
+                        "aspect_ratio": aspect_ratio,
+                        "video_path": result.get("video_path"),
+                        "last_frame_path": result.get("last_frame_path"),
+                        "model": "Seedance 2.0",
+                        "created_at": datetime.now().isoformat(),
+                        "project_id": st.session_state.get("active_project_id"),
+                        "estimated_cost": _s2_est_cost,
+                        "scene_description": st.session_state.get("action_desc_s2", ""),
+                        "raw_prompt": st.session_state.get("s2_raw_prompt", ""),
+                        "optimized_prompt": chosen_prompt,
+                        "entry_point": st.session_state.get("s2_entry_point", ""),
+                        "workflow": s2_workflow,
+                        "image_usage": image_usage,
+                        "speed": s2_speed,
+                        "watermark": st.session_state.get("s2_watermark", False),
+                        "seeds": _seeds_payload,
+                        "audio_enabled": gen_audio,
+                        "audio_settings": _audio_payload,
+                        "reference_asset_ids": _ref_asset_ids,
+                        "shots_data": _gallery_shots,
+                        "settings_sidecar_path": _sidecar_path,
+                        "schema_version": "1",
+                    }
+                    st.session_state.gallery_videos.append(_gv_entry)
+                    set_rating_for_item(_gv_entry, "green")
                     _settings = st.session_state.get("_json_dict")
                     if _settings is None:
-                        _seeds_sv = [st.session_state.get(f"seed_input_{i}", "") for i in range(st.session_state.get("common_num_variations", 1))]
+                        _seeds_sv = [_s2_seed_used]
                         _settings = _build_settings_json(
                             "SEEDANCE 2.0",
                             action_desc=action_desc,
@@ -1411,8 +1669,7 @@ def render_console_page():
                             resolution=resolution,
                             aspect_ratio=aspect_ratio,
                             duration=duration,
-                            gen_mode=gen_mode,
-                            temperature=temperature,
+                            speed=s2_speed,
                             seeds=_seeds_sv,
                             num_imgs=num_imgs,
                             num_vids=num_vids,
@@ -1424,7 +1681,7 @@ def render_console_page():
                         )
                     if _settings and result.get("video_path"):
                         try:
-                            _json_path = result["video_path"].rsplit(".", 1)[0] + "_settings.json"
+                            _json_path = clip_meta_json_path(result["video_path"])
                             with open(_json_path, "w", encoding="utf-8") as _jf:
                                 json.dump(_settings, _jf, indent=2, ensure_ascii=False)
                         except Exception:
@@ -1484,11 +1741,79 @@ def render_console_page():
         else:
             final_prompt = st.session_state.get("sd_opt_prompt", "")
             optimize_mode = None if (st.session_state.get("sd_optimize") == "None") else st.session_state.get("sd_optimize")
-            with st.spinner("Seedream is processing..."):
-                result = generate_seedream_image(prompt=final_prompt, ref_images=sd_refs if sd_refs else [], style_preset=sd_style, aspect_ratio=sd_ar, model_id=SEEDREAM_5_0_LITE_MODEL_ID, sequential="disabled", max_images=1, output_format="jpeg", optimize_prompt_mode=optimize_mode, resolution=sd_resolution, watermark=False, watermark_text=None, stream=False)
-                if isinstance(result, dict) and (result.get("images") or result.get("image_url")):
-                    st.session_state.sd_last_result = {"result": result, "final_prompt": final_prompt, "batch": bool(result.get("images"))}
-                    imgs = result.get("images") or [{"image_url": result.get("image_url"), "image_path": result.get("image_path")}]
+            _sd_var_n_gen = int(st.session_state.get("sd_num_variations", 1))
+            _sd_var_mode_gen = st.session_state.get("sd_variation_mode", "Independent (per seed)")
+            _sd_seeds_gen = [
+                st.session_state.get(f"sd_seed_input_{i}", "")
+                for i in range(_sd_var_n_gen)
+            ]
+            _sd_gen_common = dict(
+                prompt=final_prompt,
+                ref_images=sd_refs if sd_refs else [],
+                style_preset=sd_style,
+                aspect_ratio=sd_ar,
+                model_id=SEEDREAM_5_0_LITE_MODEL_ID,
+                output_format="jpeg",
+                optimize_prompt_mode=optimize_mode,
+                resolution=sd_resolution,
+                watermark=False,
+                watermark_text=None,
+                stream=False,
+                project_name=get_active_project_name(),
+            )
+            with st.spinner(
+                f"Seedream is processing ({_sd_var_n_gen} variation"
+                f"{'' if _sd_var_n_gen == 1 else 's'})..."
+            ):
+                imgs = []
+                _sd_errors = []
+                if (
+                    _sd_var_n_gen > 1
+                    and _sd_var_mode_gen == "Coherent series (1 batch)"
+                ):
+                    result = generate_seedream_image(
+                        **_sd_gen_common,
+                        sequential="auto",
+                        max_images=_sd_var_n_gen,
+                        seed=_sd_seeds_gen[0] if _sd_seeds_gen else None,
+                    )
+                    if isinstance(result, dict):
+                        if result.get("images"):
+                            imgs.extend(result["images"])
+                        elif result.get("image_url"):
+                            imgs.append(result)
+                    elif isinstance(result, str):
+                        _sd_errors.append(result)
+                else:
+                    for _vi in range(_sd_var_n_gen):
+                        _seed_v = _sd_seeds_gen[_vi] if _vi < len(_sd_seeds_gen) else ""
+                        result = generate_seedream_image(
+                            **_sd_gen_common,
+                            sequential="disabled",
+                            max_images=1,
+                            seed=_seed_v,
+                        )
+                        if isinstance(result, dict):
+                            if result.get("images"):
+                                imgs.extend(result["images"])
+                            elif result.get("image_url"):
+                                imgs.append(result)
+                            elif result.get("error"):
+                                _sd_errors.append(str(result.get("error")))
+                        elif isinstance(result, str):
+                            _sd_errors.append(result)
+
+                imgs = [im for im in imgs if isinstance(im, dict) and not im.get("error")]
+                if imgs:
+                    _batch = len(imgs) > 1
+                    _result_payload = (
+                        {"images": imgs} if _batch else imgs[0]
+                    )
+                    st.session_state.sd_last_result = {
+                        "result": _result_payload,
+                        "final_prompt": final_prompt,
+                        "batch": _batch,
+                    }
                     _settings = st.session_state.get("_json_dict")
                     if _settings is None:
                         _settings = _build_settings_json(
@@ -1508,27 +1833,46 @@ def render_console_page():
                             resolution=sd_resolution,
                             aspect_ratio=sd_ar,
                             optimize=st.session_state.get("sd_optimize", "None"),
+                            num_variations=_sd_var_n_gen,
+                            variation_mode=_sd_var_mode_gen,
+                            seeds=_sd_seeds_gen,
                             num_refs=len(sd_refs) if sd_refs else 0,
                         )
                     if _settings:
                         for im in imgs:
-                            if im.get("error"):
-                                continue
                             if im.get("image_path"):
                                 try:
-                                    _json_path = im["image_path"].rsplit(".", 1)[0] + "_settings.json"
+                                    _json_path = clip_meta_json_path(im["image_path"])
                                     with open(_json_path, "w", encoding="utf-8") as _jf:
                                         json.dump(_settings, _jf, indent=2, ensure_ascii=False)
                                 except Exception:
                                     pass
                     for im in imgs:
-                        if im.get("error"): continue
                         _sd_est_cost = estimate_cost(SEEDREAM_5_0_LITE_MODEL_ID, sd_resolution)
-                        st.session_state.gallery_images.append({"url": im.get("image_url", ""), "caption": (final_prompt or "Seedream 5.0")[:50], "prompt": final_prompt, "style": sd_style, "aspect_ratio": sd_ar, "resolution": sd_resolution, "specs": {}, "image_path": im.get("image_path"), "created_at": datetime.now().isoformat(), "project_id": st.session_state.get("active_project_id"), "estimated_cost": _sd_est_cost})
+                        _gi_entry = {
+                            "url": im.get("image_url", ""),
+                            "caption": (final_prompt or "Seedream 5.0")[:50],
+                            "prompt": final_prompt,
+                            "style": sd_style,
+                            "aspect_ratio": sd_ar,
+                            "resolution": sd_resolution,
+                            "specs": {},
+                            "image_path": im.get("image_path"),
+                            "created_at": datetime.now().isoformat(),
+                            "project_id": st.session_state.get("active_project_id"),
+                            "estimated_cost": _sd_est_cost,
+                        }
+                        st.session_state.gallery_images.append(_gi_entry)
+                        set_rating_for_item(_gi_entry, "green")
                     save_gallery_to_disk(st.session_state.gallery_videos, st.session_state.gallery_images)
+                    if _sd_errors:
+                        st.warning("Some variations failed: " + "; ".join(_sd_errors[:3]))
                 else:
                     st.session_state.sd_last_result = None
-                    st.error(f"Dream Failed: {result}")
+                    st.error(
+                        "Dream Failed: "
+                        + (_sd_errors[0] if _sd_errors else "No images returned.")
+                    )
             st.session_state["_do_generate_sd"] = False
             st.rerun()
 

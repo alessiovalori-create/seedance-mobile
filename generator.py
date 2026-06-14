@@ -37,6 +37,9 @@ try:
 except ImportError:
     PIL_AVAILABLE = False
 
+from arkitect.shared import generated_output_dir
+from arkitect.clip_naming import clip_meta_txt_path, clip_last_frame_path
+
 # Max image file size for Seedance 2.0 API (official limit: 30MB, safety margin for base64 overhead)
 MAX_IMAGE_BYTES = 20 * 1024 * 1024  # 20MB
 SEEDANCE_IMAGE_API_MAX_BYTES = 30 * 1024 * 1024
@@ -661,7 +664,7 @@ def _estimate_seedance2_usage(duration=5, resolution="720p",
     }
 
 
-def estimate_cost(model_id, resolution="720p", duration=5, generate_audio=False, is_draft=False, is_offline=False, aspect_ratio="16:9", has_video_input=False):
+def estimate_cost(model_id, resolution="720p", duration=5, generate_audio=False, aspect_ratio="16:9", has_video_input=False):
     """Return estimated cost in USD based on current ByteDance ARK pricing."""
 
     # ── Seedream (images) ──
@@ -710,18 +713,13 @@ GENERATION_LOG_PATH = os.path.join(
 # HELPERS
 # ──────────────────────────────────────────────
 def save_video_with_metadata(video_url, prompt_text, scene_description, resolution, aspect_ratio, 
-                             duration, seed, generate_audio, is_draft, is_offline, model_id, has_video_input=False):
+                             duration, seed, generate_audio, model_id, has_video_input=False,
+                             full_scene_description=None, project_name=None, usage=None):
     """
     Download video, extract last frame, and save metadata file.
     Returns dict with paths: video_path, last_frame_path, info_file_path
     """
-    # Create downloads directory structure: downloads/YYYY-MM-DD/
-    today = datetime.now().strftime("%Y-%m-%d")
-    _persist = os.getenv("PERSIST_DIR", "")
-    if not _persist:
-        _persist = "/data" if os.path.isdir("/data") else os.path.join(os.path.dirname(__file__), "data")
-    base_dir = os.path.join(_persist, "generated", today)
-    os.makedirs(base_dir, exist_ok=True)
+    base_dir = generated_output_dir(project_name=project_name)
     
     # Generate filename from scene description (first 30 chars, sanitized)
     scene_slug = re.sub(r'[^\w\s-]', '', scene_description[:30]).strip().replace(' ', '_').lower() or "video"
@@ -733,8 +731,8 @@ def save_video_with_metadata(video_url, prompt_text, scene_description, resoluti
     
     filename_base = f"{scene_slug}_{index:03d}"
     video_path = os.path.join(base_dir, f"{filename_base}.mp4")
-    last_frame_path = os.path.join(base_dir, f"{filename_base}_last.png")
-    info_file_path = os.path.join(base_dir, f"{filename_base}.txt")
+    last_frame_path = clip_last_frame_path(video_path)
+    info_file_path = clip_meta_txt_path(video_path)
     
     # Download video
     try:
@@ -766,6 +764,9 @@ def save_video_with_metadata(video_url, prompt_text, scene_description, resoluti
     # Create info file
     try:
         with open(info_file_path, 'w', encoding='utf-8') as f:
+            if full_scene_description and full_scene_description.strip():
+                f.write(f"Scene Description: {full_scene_description.strip()}\n")
+                f.write(f"{'─' * 60}\n")
             f.write(f"Prompt Sent: {prompt_text}\n")
             f.write(f"Seed: {seed if seed != '-1' else 'Random'}\n")
             f.write(f"Resolution: {resolution}\n")
@@ -773,9 +774,23 @@ def save_video_with_metadata(video_url, prompt_text, scene_description, resoluti
             f.write(f"Duration: {duration}s\n")
             f.write(f"Model: {model_id}\n")
             f.write(f"Audio Enabled: {generate_audio}\n")
-            f.write(f"Draft Mode: {is_draft}\n")
-            f.write(f"Offline Mode: {is_offline}\n")
+            if project_name and str(project_name).strip() not in ("", "All Projects"):
+                f.write(f"Project: {project_name.strip()}\n")
             f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            if video_url and str(video_url).startswith("http"):
+                f.write(f"Video URL: {video_url}\n")
+            _real_total = None
+            if isinstance(usage, dict) and usage:
+                _real_total = usage.get("total_tokens")
+                if _real_total is None:
+                    _ct = usage.get("completion_tokens")
+                    _pt = usage.get("prompt_tokens")
+                    if _ct is not None or _pt is not None:
+                        _real_total = (_ct or 0) + (_pt or 0)
+            if _real_total is not None:
+                f.write(f"Tokens (real): {_real_total}\n")
+            else:
+                f.write("Tokens: unavailable\n")
             if "seedance-2" in str(model_id).lower():
                 usage = _estimate_seedance2_usage(
                     duration=duration,
@@ -799,25 +814,20 @@ def save_video_with_metadata(video_url, prompt_text, scene_description, resoluti
     }
 
 
-def save_image_with_metadata(image_url, prompt_text, style_preset="None", aspect_ratio="1:1", model_id=None, resolution="2K", optimize_prompt_mode=None):
+def save_image_with_metadata(image_url, prompt_text, style_preset="None", aspect_ratio="1:1", model_id=None, resolution="2K", optimize_prompt_mode=None, project_name=None):
     """
     Download image from URL and save metadata .txt file.
     Returns dict with image_path, info_file_path.
     optimize_prompt_mode: "standard", "fast", or None — included in info file when set (affects generation for 5.0 lite).
     """
-    today = datetime.now().strftime("%Y-%m-%d")
-    _persist = os.getenv("PERSIST_DIR", "")
-    if not _persist:
-        _persist = "/data" if os.path.isdir("/data") else os.path.join(os.path.dirname(__file__), "data")
-    base_dir = os.path.join(_persist, "generated", today)
-    os.makedirs(base_dir, exist_ok=True)
+    base_dir = generated_output_dir(project_name=project_name)
     scene_slug = re.sub(r'[^\w\s-]', '', (prompt_text or "image")[:30]).strip().replace(' ', '_').lower() or "image"
     index = 1
     while os.path.exists(os.path.join(base_dir, f"{scene_slug}_{index:03d}.png")):
         index += 1
     filename_base = f"{scene_slug}_{index:03d}"
     image_path = os.path.join(base_dir, f"{filename_base}.png")
-    info_file_path = os.path.join(base_dir, f"{filename_base}.txt")
+    info_file_path = clip_meta_txt_path(image_path)
     try:
         _session = _session_for_ark()
         img_resp = _session.get(image_url, timeout=120, stream=True, verify=_ssl_verify)
@@ -836,6 +846,8 @@ def save_image_with_metadata(image_url, prompt_text, style_preset="None", aspect
             f.write(f"Model: {model_id or SEEDREAM_4_5_MODEL_ID}\n")
             if optimize_prompt_mode in ("standard", "fast"):
                 f.write(f"Optimize prompt: {optimize_prompt_mode}\n")
+            if project_name and str(project_name).strip() not in ("", "All Projects"):
+                f.write(f"Project: {project_name.strip()}\n")
             f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             _est = estimate_cost(model_id or "", resolution)
             f.write(f"Estimated Cost: {format_cost_str(_est)}\n")
@@ -864,13 +876,12 @@ def upload_file_to_byteplus(streamlit_file):
 # 1. VIDEO GENERATION (SEEDANCE 2.0) — JSON strict validation
 # ──────────────────────────────────────────────
 def _estimate_cost(model, duration=None, resolution=None,
-                   service_tier="Online", input_tokens=0, output_tokens=0):
+                   has_video_input=False, input_tokens=0, output_tokens=0):
     cost = 0.0
     breakdown = []
     m = model.lower()
 
     if "seedance-2" in m:
-        has_video_input = str(service_tier).lower() == "with_video_input"
         usage = _estimate_seedance2_usage(duration=(duration or 10), resolution=(resolution or "720p"), has_video_input=has_video_input)
         base = usage["estimated_cost"]
         cost += base
@@ -889,8 +900,7 @@ def _estimate_cost(model, duration=None, resolution=None,
     return {"total_usd": round(cost, 4), "breakdown": breakdown}
 
 
-def _log_generation_cost(model, duration, resolution, service_tier,
-                          cost_dict, prompt_preview=""):
+def _log_generation_cost(model, duration, resolution, cost_dict, prompt_preview=""):
     import csv
     file_exists = os.path.isfile(GENERATION_LOG_PATH)
     row = {
@@ -899,7 +909,6 @@ def _log_generation_cost(model, duration, resolution, service_tier,
         "provider": "ARK Direct" if "seedance-2" in str(model).lower() else "",
         "duration_s": duration or "",
         "resolution": resolution or "",
-        "service_tier": service_tier or "",
         "cost_usd": cost_dict["total_usd"],
         "breakdown": " | ".join(cost_dict["breakdown"]),
         "prompt_preview": (prompt_preview or "")[:80],
@@ -913,7 +922,7 @@ def _log_generation_cost(model, duration, resolution, service_tier,
 
 def generate_video(prompt_text, scene_description, images=[], videos=[], audios=[], 
                    seed="-1", resolution="1080p", aspect_ratio="16:9", duration=8, 
-                   generate_audio=False, audio_details={}, is_draft=False, is_offline=False, 
+                   generate_audio=False, audio_details={}, 
                    model_id=None, shots_data=None, camera_fixed=None, **kwargs):
     if not API_KEY:
         return {"error": "API_KEY_ERROR", "details": ["ARK_API_KEY is missing."]}
@@ -1120,15 +1129,7 @@ def generate_video(prompt_text, scene_description, images=[], videos=[], audios=
         if duration_int < 4 or duration_int > 15:
             duration_int = max(4, min(15, duration_int))
 
-    if camera_fixed is None:
-        camera_fixed = False
-
-    # service_tier is still used for polling timeout / cost logging only
-    service_tier = "Offline" if is_offline else "Online"
-    if is_draft:
-        service_tier = "Online"
-
-    _res_out = "480p" if is_draft else (resolution or "720p")
+    _res_out = resolution or "720p"
     if "seedance-2" in str(model).lower() and _res_out not in ("480p", "720p", "1080p"):
         _res_out = "720p"  # Seedance 2.0 API: 480p / 720p / 1080p
 
@@ -1143,13 +1144,6 @@ def generate_video(prompt_text, scene_description, images=[], videos=[], audios=
         "watermark": bool(kwargs.get("watermark", False)),
         "return_last_frame": True,
     }
-    # service_tier not supported in r2v mode (reference images present)
-    _has_ref_image = any(
-        isinstance(it, dict) and it.get("role") == "reference_image"
-        for it in content_list
-    )
-    if service_tier and service_tier.lower() in ("flex", "offline") and not _has_ref_image:
-        payload["service_tier"] = "flex"
     has_video_reference = any((it or {}).get("type") == "video_url" for it in content_list if isinstance(it, dict))
 
     print(f"[DEBUG-GV] payload keys: {list(payload.keys())}, model: {payload.get('model')}")
@@ -1182,7 +1176,7 @@ def generate_video(prompt_text, scene_description, images=[], videos=[], audios=
             return {"error": "API did not return a task id", "details": [str(res_json)[:500]]}
         
         # Polling Loop
-        poll_max = 600 if is_offline else 120
+        poll_max = 120
         status_url = f"{VIDEO_TASK_URL}/{task_id}"
         
         for _ in range(poll_max):
@@ -1192,6 +1186,12 @@ def generate_video(prompt_text, scene_description, images=[], videos=[], audios=
             s_data = s_json.get("data") if isinstance(s_json, dict) and isinstance(s_json.get("data"), dict) else s_json
             status = s_data.get("status")
             if status == "succeeded":
+                usage_dict = {}
+                _raw_usage = s_json.get("usage")
+                if not isinstance(_raw_usage, dict) or not _raw_usage:
+                    _raw_usage = s_data.get("usage") if isinstance(s_data, dict) else None
+                if isinstance(_raw_usage, dict):
+                    usage_dict = _raw_usage
                 content_obj = s_data.get("content", {}) if isinstance(s_data, dict) else {}
                 video_url = content_obj.get("video_url")
                 if not video_url:
@@ -1204,23 +1204,25 @@ def generate_video(prompt_text, scene_description, images=[], videos=[], audios=
                         video_url=video_url,
                         prompt_text=prompt_text,
                         scene_description=scene_description,
+                        full_scene_description=kwargs.get("full_scene_description", ""),
                         resolution=resolution,
                         aspect_ratio=aspect_ratio,
                         duration=duration_int,
                         seed=seed,
                         generate_audio=generate_audio,
-                        is_draft=is_draft,
-                        is_offline=is_offline,
                         model_id=model,
                         has_video_input=has_video_reference,
+                        project_name=kwargs.get("project_name"),
+                        usage=usage_dict,
                     )
                     return {
                         "video": video_url,
                         "video_path": saved_paths.get("video_path"),
                         "last_frame_path": saved_paths.get("last_frame_path"),
-                        "info_file_path": saved_paths.get("info_file_path")
+                        "info_file_path": saved_paths.get("info_file_path"),
+                        "usage": usage_dict,
                     }
-                return {"video": video_url}
+                return {"video": video_url, "usage": usage_dict}
             elif status == "failed":
                 err_obj = s_data.get("error") if isinstance(s_data, dict) else None
                 if isinstance(err_obj, dict):
@@ -1252,18 +1254,140 @@ def generate_video(prompt_text, scene_description, images=[], videos=[], audios=
     except Exception as e:
         return {"error": "Request failed", "details": [str(e)]}
 
+
+# ──────────────────────────────────────────────
+# EXTEND & UPGRADE HELPER — Single-pass workflow
+# Combines resolution upgrade + duration extension via Seedance 2.0 Video Extension.
+# The source clip (any resolution) is fed as @Video 1; the output is generated at
+# target_resolution and target_duration. The first source_duration seconds are
+# locked to faithful replication; remaining seconds follow extension_description.
+# Pricing: video-input mode costs ~38% less per token (BytePlus ModelArk pricing).
+# ──────────────────────────────────────────────
+def extend_and_upgrade(
+    source_video,
+    source_duration,
+    target_duration,
+    target_resolution="1080p",
+    extension_description="",
+    aspect_ratio="16:9",
+    model_id=None,
+    audio_details=None,
+    project_name=None,
+):
+    """
+    Single-pass workflow that:
+      1. Re-generates the source clip at target_resolution (first source_duration s)
+      2. Extends it with new material up to target_duration (remaining s)
+    Both segments are produced by the same Seedance 2.0 task — no concat, no drift
+    between segments because they share noise space.
+
+    Args:
+        source_video: same shape generate_video() accepts (UploadedFile / path / dict).
+        source_duration: int, duration of the source clip in seconds (1–15).
+        target_duration: int, total output duration in seconds (4–15).
+                         Must be > source_duration for the extension to make sense.
+        target_resolution: "720p" | "1080p" | "2K".
+        extension_description: free-text description of what happens AFTER
+                               source_duration. If empty, a neutral continuation
+                               instruction is used.
+        aspect_ratio: must match the source aspect ratio.
+        model_id: defaults to SEEDANCE_2_0_MODEL_ID.
+        audio_details: pass None to skip audio regen; dict to enable.
+
+    Returns:
+        dict — same shape as generate_video(), or an error message on failure.
+    """
+    # Validate durations against Seedance 2.0 hard limits (4–15s)
+    try:
+        source_duration = int(source_duration)
+        target_duration = int(target_duration)
+    except (TypeError, ValueError):
+        return {"error": "Invalid duration values"}
+
+    if target_duration < 4:
+        target_duration = 4
+    if target_duration > 15:
+        target_duration = 15
+    if source_duration < 1:
+        source_duration = 1
+    if source_duration >= target_duration:
+        return {
+            "error": f"target_duration ({target_duration}s) must be greater than "
+                     f"source_duration ({source_duration}s) for extension."
+        }
+
+    # Build the timestamped prompt
+    replication_block = (
+        f"0s-{source_duration}s: Faithfully replicate all the visual content, motion, "
+        f"composition, camera movements, lighting, color palette, and pacing of @Video 1 "
+        f"without alteration. Maintain identical characters, environment, framing, and timing. "
+        f"The clip continues seamlessly from this segment."
+    )
+
+    # Neutral fallback if user provides no extension description
+    if not extension_description or not str(extension_description).strip():
+        extension_text = (
+            "The scene continues naturally from the previous segment, "
+            "maintaining the same characters, environment, lighting, and visual style. "
+            "The action progresses organically without abrupt changes."
+        )
+    else:
+        extension_text = str(extension_description).strip()
+
+    extension_block = f"{source_duration}s-{target_duration}s: {extension_text}"
+
+    full_prompt = f"{replication_block}\n{extension_block}"
+
+    videos_param = [source_video] if source_video else []
+
+    return generate_video(
+        prompt_text=full_prompt,
+        scene_description="Extend & Upgrade",
+        images=[],
+        videos=videos_param,
+        audios=[],
+        seed="-1",
+        resolution=target_resolution,
+        aspect_ratio=aspect_ratio,
+        duration=target_duration,
+        generate_audio=bool(audio_details),
+        audio_details=audio_details or {},
+        model_id=model_id or SEEDANCE_2_0_MODEL_ID,
+        shots_data=[],
+        project_name=project_name,
+    )
+
 # ──────────────────────────────────────────────
 # 2. SEEDREAM 5.0 / 4.5 GENERATION (IMAGE)
 # ──────────────────────────────────────────────
+def _parse_seedream_seed(seed):
+    """Return API seed int in [-1, 2147483647], or None for random (omit from payload)."""
+    if seed is None:
+        return None
+    s = str(seed).strip()
+    if not s or s.lower() in ("random", "-1"):
+        return None
+    try:
+        v = int(s)
+        if -1 <= v <= 2147483647:
+            return v if v >= 0 else None
+    except (ValueError, TypeError):
+        pass
+    return None
+
+
 def generate_seedream_image(prompt, ref_images=[], style_preset="None", aspect_ratio="1:1",
                             model_id=None, sequential="disabled", max_images=1,
-                            output_format="jpeg", optimize_prompt_mode=None, resolution="2K", watermark=False, watermark_text=None, stream=False):
+                            output_format="jpeg", optimize_prompt_mode=None, resolution="2K",
+                            watermark=False, watermark_text=None, stream=False, seed=None,
+                            project_name=None):
     """
     model_id: SEEDREAM_5_0_LITE_MODEL_ID or SEEDREAM_4_5_MODEL_ID
     sequential: "disabled" (single) or "auto" (batch)
     max_images: 1-15, used when sequential="auto"
     output_format: "jpeg" or "png" (5.0 lite only)
     optimize_prompt_mode: "standard", "fast", or None (5.0 lite / 4.5 standard mode)
+    seed: optional int or str; empty / -1 = random
     resolution: "1K", "2K", or "4K" — output dimensions (1K only for 5.0 lite)
     watermark: if True, enable watermark (API: boolean; doc uses False)
     watermark_text: optional custom text for watermark (sent if API supports it)
@@ -1353,6 +1477,9 @@ def generate_seedream_image(prompt, ref_images=[], style_preset="None", aspect_r
             payload["output_format"] = output_format
         if optimize_prompt_mode in ("standard", "fast"):
             payload["optimize_prompt_options"] = {"mode": optimize_prompt_mode}
+        seed_int = _parse_seedream_seed(seed)
+        if seed_int is not None:
+            payload["seed"] = seed_int
         if stream:
             payload["stream"] = True
 
@@ -1404,7 +1531,7 @@ def generate_seedream_image(prompt, ref_images=[], style_preset="None", aspect_r
                     if image_url:
                         saved = save_image_with_metadata(
                             image_url, styled_prompt, style_preset, aspect_ratio, model, resolution=res,
-                            optimize_prompt_mode=optimize_prompt_mode
+                            optimize_prompt_mode=optimize_prompt_mode, project_name=project_name,
                         )
                         out = {"image_url": image_url}
                         if saved.get("image_path"):
@@ -1446,7 +1573,7 @@ def generate_seedream_image(prompt, ref_images=[], style_preset="None", aspect_r
                     continue
                 saved = save_image_with_metadata(
                     image_url, styled_prompt, style_preset, aspect_ratio, model, resolution=res,
-                    optimize_prompt_mode=optimize_prompt_mode
+                    optimize_prompt_mode=optimize_prompt_mode, project_name=project_name,
                 )
                 out = {"image_url": image_url}
                 if saved.get("image_path"):

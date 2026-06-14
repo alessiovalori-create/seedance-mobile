@@ -7,6 +7,7 @@ from datetime import datetime
 import streamlit as st
 import streamlit.components.v1 as components
 
+from arkitect.shared import ensure_project_generated_dir
 from arkitect.storage import load_projects, save_projects
 from arkitect.ui_helpers import _render_project_name_inline_right
 
@@ -50,12 +51,15 @@ def render_projects_page():
         elif val == "Editing":
             st.session_state.proj_nav = "Projects"
             st.session_state.active_page = "editing"
+        elif val == "LAB":
+            st.session_state.proj_nav = "Projects"
+            st.session_state.active_page = "lab"
 
     _proj_nav_col, _proj_name_col = st.columns([4, 1])
     with _proj_nav_col:
         st.radio(
             "proj_nav_label",
-            ["Console", "Projects", "Gallery", "Assets", "References", "Storyboard", "Editing"],
+            ["Console", "Projects", "Gallery", "Assets", "References", "Storyboard", "Editing", "LAB"],
             horizontal=True,
             key="proj_nav",
             on_change=_on_proj_nav_change,
@@ -231,6 +235,7 @@ def render_projects_page():
                 proj_data["projects"].append(new_proj)
                 proj_data["active_project_id"] = new_id
                 save_projects(proj_data)
+                ensure_project_generated_dir(name)
                 st.session_state.active_project_id = new_id
                 st.session_state.active_project_name = name
                 _clear_console_prompts_for_project_change()

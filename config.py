@@ -27,7 +27,7 @@ def get_config():
         "ARK_LLM_URL": os.getenv("ARK_LLM_URL", "https://ark.ap-southeast.bytepluses.com/api/v3/chat/completions"),
 
         # Seedance 2.0 model identifier (update from ModelArk console when new versions ship)
-        "SEEDANCE_2_MODEL_ID": os.getenv("SEEDANCE_2_MODEL_ID", "seedance-2-0-pro-260210"),
+        "SEEDANCE_2_MODEL_ID": os.getenv("SEEDANCE_2_MODEL_ID", "dreamina-seedance-2-0-260128"),
 
         # Seedream 5.0-lite model identifier
         "SEEDREAM_5_MODEL_ID": os.getenv("SEEDREAM_5_MODEL_ID", "seedream-5-0-260128"),

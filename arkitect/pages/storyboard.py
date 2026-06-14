@@ -13,7 +13,7 @@ def render_storyboard_page():
     """Render the Storyboard page (image grid + save/load)."""
     if "sbi_nav" not in st.session_state:
         st.session_state.sbi_nav = "Storyboard"
-    elif st.session_state.sbi_nav not in ("Console", "Projects", "Gallery", "Assets", "References", "Storyboard", "Editing"):
+    elif st.session_state.sbi_nav not in ("Console", "Projects", "Gallery", "Assets", "References", "Storyboard", "Editing", "LAB"):
         st.session_state.sbi_nav = "Storyboard"
 
     def _on_sbi_nav_change():
@@ -37,9 +37,12 @@ def render_storyboard_page():
         elif val == "Editing":
             st.session_state.sbi_nav = "Storyboard"
             st.session_state.active_page = "editing"
+        elif val == "LAB":
+            st.session_state.sbi_nav = "Storyboard"
+            st.session_state.active_page = "lab"
 
     # "Storyboard" per primo: un reset sporadico del radio non seleziona "Console" → main page
-    _SBI_NAV_ORDER = ["Storyboard", "Console", "Projects", "Gallery", "Assets", "References", "Editing"]
+    _SBI_NAV_ORDER = ["Storyboard", "Console", "Projects", "Gallery", "Assets", "References", "Editing", "LAB"]
     _sbi_nav_col, _sbi_proj_col = st.columns([4, 1])
     with _sbi_nav_col:
         st.radio(
@@ -53,17 +56,14 @@ def render_storyboard_page():
     with _sbi_proj_col:
         _render_project_name_inline_right()
 
-    _sb_main, _sb_side = st.columns([4, 1], gap="large")
-    with _sb_side:
-        _render_storyboard_projects_sidebar()
-    with _sb_main:
-        _render_storyboard_save_load("sbi", use_projects_layout=True)
+    _render_storyboard_projects_sidebar()
+    _render_storyboard_save_load("sbi", use_projects_layout=True)
 
 def render_editing_page():
     """Render the Editing page (video timeline + save/load)."""
     if "sbv_nav" not in st.session_state:
         st.session_state.sbv_nav = "Editing"
-    elif st.session_state.sbv_nav not in ("Console", "Projects", "Gallery", "Assets", "References", "Storyboard", "Editing"):
+    elif st.session_state.sbv_nav not in ("Console", "Projects", "Gallery", "Assets", "References", "Storyboard", "Editing", "LAB"):
         st.session_state.sbv_nav = "Editing"
 
     def _on_sbv_nav_change():
@@ -87,8 +87,11 @@ def render_editing_page():
         elif val == "Storyboard":
             st.session_state.sbv_nav = "Editing"
             st.session_state.active_page = "storyboard"
+        elif val == "LAB":
+            st.session_state.sbv_nav = "Editing"
+            st.session_state.active_page = "lab"
 
-    _SBV_NAV_ORDER = ["Editing", "Console", "Projects", "Gallery", "Assets", "References", "Storyboard"]
+    _SBV_NAV_ORDER = ["Editing", "Console", "Projects", "Gallery", "Assets", "References", "Storyboard", "LAB"]
     _sbv_nav_col, _sbv_proj_col = st.columns([4, 1])
     with _sbv_nav_col:
         st.radio(
@@ -102,8 +105,5 @@ def render_editing_page():
     with _sbv_proj_col:
         _render_project_name_inline_right()
 
-    _ed_main, _ed_side = st.columns([4, 1], gap="large")
-    with _ed_side:
-        _render_editing_projects_sidebar()
-    with _ed_main:
-        _render_storyboard_save_load("sbv", use_projects_layout=True)
+    _render_editing_projects_sidebar()
+    _render_storyboard_save_load("sbv", use_projects_layout=True)
